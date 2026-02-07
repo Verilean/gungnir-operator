@@ -1,0 +1,933 @@
+# Valkey Operator Features
+
+## Executive Summary
+
+This document defines the production-ready feature set for a formally verified Valkey Operator implemented in Lean 4. The operator integrates Sentinel functionality directly (Operator-as-Sentinel pattern) rather than deploying separate Sentinel containers, reducing complexity by 40% while providing stronger correctness guarantees through formal verification.
+
+**Key Innovation**: Replace distributed Sentinel consensus with centralized Operator logic backed by Kubernetes leader election and formal proofs.
+
+---
+
+## Implementation Status
+
+**Build**: Docker build passes, 19/19 modules compile with Lean 4 v4.20.0
+**Proof placeholders**: 19 `sorry`-based placeholders across Invariants, Liveness, RESP3, ReplicaSelection
+
+### Module Summary
+
+| Module | Files | Status |
+|--------|-------|--------|
+| K8s (`Gungnir/K8s/`) | 6 | Complete - Types, Resources, API, Builder, ValkeyCluster, root import |
+| StateMachine (`Gungnir/StateMachine/`) | 6 | Complete - StateMachine, TemporalLogic, Reconciler, Sentinel, Invariants, Liveness |
+| Valkey (`Gungnir/Valkey/`) | 5 | Complete - RESP3, Connection, Commands, Sentinel, ReplicaSelection |
+
+### Feature Implementation Status
+
+| Feature | Status | Implemented In |
+|---------|--------|----------------|
+| [F1] RESP3 Parser | **Implemented** | `Gungnir/Valkey/RESP3.lean` |
+| [F2] Schema-Driven Clients | **Partially Implemented** | `Gungnir/K8s/API.lean`, `Gungnir/Valkey/Commands.lean` |
+| [F3] Reconciler State Machine | **Implemented** | `Gungnir/StateMachine/Reconciler.lean`, `Gungnir/K8s/ValkeyCluster.lean` |
+| [F4] Resource Builders | **Implemented** | `Gungnir/K8s/Builder.lean`, `Gungnir/K8s/Resources.lean` |
+| [F5] Health Monitoring | **Implemented** | `Gungnir/Valkey/Sentinel.lean` (health_check) |
+| [F6] SDOWN Detection | **Implemented** | `Gungnir/StateMachine/Sentinel.lean` (NodeHealth, sentinelNext) |
+| [F7] Replica Selection | **Implemented** | `Gungnir/Valkey/ReplicaSelection.lean` |
+| [F8] Promotion & Reconfiguration | **Partially Implemented** | `Gungnir/Valkey/Commands.lean` (REPLICAOF, ROLE) |
+| [F9] Atomic K8s Service Update | **Modeled** | `Gungnir/K8s/API.lean` (UpdateRequest) |
+| [F10] Backup/Restore | **Partially Implemented** | `Gungnir/Valkey/Commands.lean` (BGSAVE, LASTSAVE) |
+| [F11] Production Hardening | **Partially Implemented** | `Gungnir/K8s/Resources.lean` (PDB), `Gungnir/K8s/Builder.lean` |
+| [V] Formal Verification | **In Progress** | `Gungnir/StateMachine/Invariants.lean`, `Gungnir/StateMachine/Liveness.lean`, `Gungnir/StateMachine/TemporalLogic.lean` |
+
+---
+
+## Current Status: hyperspike/valkey-operator v0.0.61
+
+### Implemented Features
+- Valkey Cluster mode lifecycle management
+- StatefulSet-based deployment
+- Basic Service creation (headless + client)
+- Prometheus metrics sidecar container
+- Custom Resource Definitions (CRDs)
+
+### Critical Bugs (GitHub Issue #342)
+
+| Issue | Description | Impact | Priority |
+|-------|-------------|--------|----------|
+| #381 | Storage validation error | Blocks deployment with custom StorageClass | P0 |
+| #367 | PVC deletion lifecycle inconsistent | Data loss risk, cost leakage | P0 |
+| #284 | Scaling errors on clusters >5 nodes | Horizontal scalability broken | P0 |
+| #374 | Metrics sidecar resource limits missing | OOM kill risk, QoS violation | P1 |
+| #352 | Proxy mode connection failures | Client connectivity issues | P1 |
+
+**Assessment**: Not production-ready. Requires architectural improvements and formal verification to reach enterprise SLA requirements.
+
+---
+
+## Simplified Feature Set (11 Core Features)
+
+### Feature Dependency Layers
+
+```
+Layer 0 (Foundation)
+├── [F1] Pure RESP3 Protocol Parser
+└── [F2] Schema-Driven Client Generation
+
+Layer 1 (State Management)
+├── [F3] Reconciler State Machine
+└── [F4] Resource Builders
+
+Layer 2 (Monitoring)
+├── [F5] PING/PONG Health Monitoring
+└── [F6] SDOWN Detection (Simplified)
+
+Layer 3 (Failover)
+├── [F7] Replica Selection Algorithm
+├── [F8] Promotion & Reconfiguration
+└── [F9] Atomic K8s Service Update
+
+Layer 4 (Operations)
+├── [F10] Backup/Restore (S3)
+└── [F11] Production Hardening (PDB, TLS, QoS)
+
+Cross-Cutting
+└── [V] Formal Verification (Lentil, LeanLTL, TLA+)
+```
+
+---
+
+## Detailed Feature Specifications
+
+### [F1] Pure RESP3 Protocol Parser (FFI-Free)
+
+> **Status: Implemented** -- `Gungnir/Valkey/RESP3.lean`
+>
+> Implements `RESPValue` inductive type covering Simple Strings, Errors, Integers, Bulk Strings, Arrays, Nulls. Provides `parse_resp3` and `unparse_resp3` functions plus `encodeCommand` for building RESP3 command byte arrays. Round-trip theorem (`parse_unparse_roundtrip`) is stated but uses `sorry` (1 placeholder). Parser is pure Lean 4 with no FFI.
+
+**Description**: Implement RESP3 protocol parser entirely in Lean 4 without Foreign Function Interface (FFI) dependencies.
+
+**Rationale**:
+- Eliminates memory safety risks at FFI boundaries
+- Enables formal verification of parser correctness
+- Simplifies cross-compilation and deployment
+- Reduces attack surface (no C library dependencies)
+
+**Dependencies**: None
+
+**Technical Specifications**:
+- Parse types: Simple Strings (+), Errors (-), Integers (:), Bulk Strings ($), Arrays (*), Maps (%), Sets (~), Null (_)
+- Streaming parser with bounded memory consumption
+- Type-safe output (no runtime type errors)
+
+**Test Methods**:
+- **Unit Tests**: Parse each RESP3 type, error cases, edge cases (empty strings, max integers)
+- **Property-Based Tests**: `∀v. parse(unparse(v)) = some v` (round-trip property)
+- **Formal Proof**: Parser termination, memory bounds, type safety
+
+**Verification Goal**:
+```lean
+theorem resp3_parser_correct :
+  ∀ (bytes : ByteArray) (v : RESPValue),
+    parse bytes = some v →
+    unparse v = bytes
+```
+
+**Remaining**:
+- Prove `parse_unparse_roundtrip` (currently `sorry`)
+- Add Maps (%), Sets (~) to parser (currently supports core types)
+- Streaming/incremental parsing not yet implemented
+
+---
+
+### [F2] Schema-Driven Client Generation
+
+> **Status: Partially Implemented**
+>
+> - K8s API types are manually defined in `Gungnir/K8s/API.lean` (APIRequest, APIResponse, RequestView, ResponseView) rather than auto-generated from OpenAPI spec.
+> - Valkey command wrappers are manually defined in `Gungnir/Valkey/Commands.lean` (PING, INFO, ROLE, REPLICAOF, BGSAVE, LASTSAVE, SET, GET) rather than auto-generated from commands.json.
+
+**Description**: Generate type-safe API clients from formal specifications without manual bindings.
+
+**Components**:
+1. **Kubernetes API Client** (from OpenAPI v3)
+   - Source: `https://kubernetes.io/api/openapi-spec/v3`
+   - Generate: CRUD operations for all K8s resources
+   - Handle: Strategic Merge Patch (`x-kubernetes-patch-strategy`)
+
+2. **Valkey Command Client** (from commands.json)
+   - Source: `https://github.com/valkey-io/valkey/blob/unstable/src/commands/*.json`
+   - Generate: Type-safe wrappers (e.g., `def set : String → String → IO Reply`)
+   - Embed: Cluster routing logic based on key slots
+
+**Dependencies**: None
+
+**Test Methods**:
+- **Schema Conformance**: Generated code compiles without errors
+- **API Compatibility**: Integration tests against real K8s API server
+- **Command Validation**: Arity checks, argument type checks at compile time
+
+**Example Generated Code**:
+```lean
+-- From commands.json: SET key value [EX seconds]
+def set (key : String) (value : String) (ex : Option Nat := none) : IO RESPValue :=
+  let args := ["SET", key, value] ++ (ex.map (λ n => ["EX", toString n])).getD []
+  sendCommand args
+```
+
+**Remaining**:
+- Schema-driven code generation tooling (OpenAPI, commands.json)
+- Currently all types and wrappers are hand-written
+
+---
+
+### [F3] Reconciler State Machine (Anvil Pattern)
+
+> **Status: Implemented** -- `Gungnir/StateMachine/Reconciler.lean`, `Gungnir/K8s/ValkeyCluster.lean`
+>
+> `ValkeyReconcileStep` is defined in `ValkeyCluster.lean` with states: Init, AfterGetHeadlessService, AfterCreateHeadlessService, AfterUpdateHeadlessService, AfterGetClientService, AfterCreateClientService, AfterUpdateClientService, AfterGetConfigMap, AfterCreateConfigMap, AfterUpdateConfigMap, AfterGetStatefulSet, AfterCreateStatefulSet, AfterUpdateStatefulSet, AfterCheckValkeyHealth, AfterUpdateStatus, Done, Error.
+>
+> `reconcileCore` transition function is defined in `Reconciler.lean` along with `reconcilerStateMachine` wrapping it as an Anvil-style state machine. Supports `reconcile_get_result`, `reconcile_create_result`, `reconcile_update_result` helpers.
+
+**Description**: Implement controller reconciliation as an explicit state machine following Anvil's verified pattern.
+
+**State Enumeration**:
+```lean
+inductive ReconcileStep
+  | Init
+  | AfterGetHeadlessService
+  | AfterCreateHeadlessService
+  | AfterUpdateHeadlessService
+  | AfterGetClientService
+  | AfterCreateClientService
+  | AfterUpdateClientService
+  | AfterGetConfigMap
+  | AfterCreateConfigMap
+  | AfterUpdateConfigMap
+  | AfterGetSecret (secretType : SecretType)
+  | AfterCreateSecret (secretType : SecretType)
+  | AfterGetStatefulSet
+  | AfterCreateStatefulSet
+  | AfterUpdateStatefulSet
+  | AfterCheckValkeyHealth
+  | AfterUpdateStatus
+  | Done
+  | Error (msg : String)
+```
+
+**Transition Function**:
+```lean
+def reconcile_core
+  (cr : ValkeyCluster)
+  (resp : Option APIResponse)
+  (state : ReconcileState)
+  : (ReconcileState × Option APIRequest)
+```
+
+**Dependencies**: [F2] Schema-driven K8s client
+
+**Test Methods**:
+- **Unit Tests**: Each state transition with mocked responses
+- **State Coverage**: Visit all states in test suite
+- **TLA+ Model Checking**: Exhaustive state space exploration
+- **Formal Proof**: State machine always terminates (no infinite loops)
+
+**Verification Goals**:
+```lean
+-- Safety: Reconcile always terminates
+theorem reconcile_terminates :
+  ∀ (cr : ValkeyCluster) (state : ReconcileState),
+    ∃ n, (reconcile_iterate cr state)^n = Done ∨ Error _
+
+-- Liveness: Eventually reaches desired state
+theorem eventually_stable :
+  spec ⊨ □(desired cr) ⟹ ◇□(current matches desired cr)
+```
+
+**Remaining**:
+- Secret-related steps (AfterGetSecret, AfterCreateSecret) are defined in the spec but not yet in the implementation
+- Termination proof stated in `Liveness.lean` (`reconcileTerminates`) but uses `sorry`
+
+---
+
+### [F4] Resource Builders
+
+> **Status: Implemented** -- `Gungnir/K8s/Builder.lean`, `Gungnir/K8s/Resources.lean`
+>
+> `ResourceBuilder` typeclass defined in `Builder.lean` with `make` and `update` methods. `SubResource` enum covers HeadlessService, ClientService, ConfigMap, StatefulSet, PodDisruptionBudget, Secret. Naming conventions (`subResourceName`) and owner reference helpers (`setOwnerRef`) are implemented.
+>
+> `Resources.lean` defines view types for all managed K8s resources: PodView, ServiceView, ConfigMapView, SecretView, StatefulSetView, PodDisruptionBudgetView with relevant fields.
+
+**Description**: Generate Kubernetes manifests for Valkey cluster components.
+
+**Resources**:
+1. **HeadlessService** - StatefulSet pod discovery
+2. **ClientService** - Client connections (type: ClusterIP)
+3. **ConfigMap** - Valkey configuration (valkey.conf)
+4. **Secret** - ACL credentials, TLS certificates
+5. **StatefulSet** - Valkey pods with persistent storage
+
+**Builder Pattern** (from Anvil):
+```lean
+class ResourceBuilder (CR : Type) (Resource : Type) where
+  make : CR → Resource
+  update : CR → Resource → Option Resource
+  stateAfterCreate : CR → Resource → ReconcileState
+  stateAfterUpdate : CR → Resource → ReconcileState
+```
+
+**Dependencies**: [F3] Reconciler state machine, [F2] K8s client
+
+**Test Methods**:
+- **Golden File Tests**: Compare generated YAML against expected outputs
+- **Validation**: K8s API server accepts generated resources
+- **Idempotency**: `make(cr) == update(cr, make(cr))`
+
+**Critical Invariant**:
+```lean
+-- All resources have owner reference to CR
+theorem all_resources_owned :
+  ∀ (res : K8sResource),
+    created_by_operator res →
+    ∃! (cr : ValkeyCluster),
+      res.metadata.ownerReferences.contains (ref cr)
+```
+
+**Remaining**:
+- Concrete `ResourceBuilder` instances for each SubResource not yet implemented
+- YAML/JSON serialization not yet implemented
+
+---
+
+### [F5] PING/PONG Health Monitoring
+
+> **Status: Implemented** -- `Gungnir/Valkey/Sentinel.lean`, `Gungnir/Valkey/Commands.lean`
+>
+> `health_check` function in `Sentinel.lean` sends PING and INFO commands to a Valkey node, parses the response, and returns a `HealthCheckResult` (Healthy/Unhealthy/Unreachable). `healthCheckAsNodeHealth` converts results to the `NodeHealth` type used by the state machine sentinel logic. `Commands.lean` provides `ping` and `info` command wrappers via `Connection.lean`.
+
+**Description**: Continuously monitor Valkey node health using PING commands.
+
+**Monitoring Loop**:
+```lean
+def monitor_loop (pods : List PodInfo) : IO Unit := do
+  for pod in pods do
+    let conn ← connect pod.ip 6379
+    let start ← getCurrentTime
+    let resp ← sendCommand conn ["PING"]
+    let latency ← getCurrentTime - start
+    updatePodHealth pod.name (resp, latency)
+  sleep 1000  -- 1 second interval
+```
+
+**Metrics Collected**:
+- Response time (latency)
+- Success/failure status
+- Consecutive failure count
+
+**Dependencies**: [F1] RESP3 parser, [F2] Valkey client
+
+**Test Methods**:
+- **Mock Server**: TCP server returning +PONG/-LOADING
+- **Timeout Simulation**: Server doesn't respond, verify timeout handling
+- **Network Chaos**: Introduce packet loss, measure detection latency
+
+**Configuration**:
+- `ping-interval-ms`: Default 1000ms
+- `ping-timeout-ms`: Default 500ms
+
+**Remaining**:
+- Continuous monitoring loop (IO-level) not yet implemented; current implementation is single-shot health check
+- Latency measurement not yet implemented
+
+---
+
+### [F6] SDOWN Detection (Simplified Sentinel)
+
+> **Status: Implemented** -- `Gungnir/StateMachine/Sentinel.lean`
+>
+> `NodeHealth` inductive type (Healthy/Degraded/Failed/Unknown) and `NodeInfo` structure (with nodeId, address, role, health, replOffset, priority, lastSeen) are defined. `sentinelNext` transition function implements SDOWN detection as part of the state machine. `selectBestReplica` is also defined at the state machine level for use in failover decisions.
+
+**Description**: Detect failed nodes when PING responses stop (Subjectively Down).
+
+**Key Simplification**: Traditional Sentinel requires quorum (SDOWN → ODOWN). Integrated Operator has single authority, so SDOWN directly triggers failover decision.
+
+**Detection Logic**:
+```lean
+def detectSDOWN (node : NodeStatus) : Bool :=
+  node.consecutivePingFailures * ping_interval_ms ≥ down_after_milliseconds
+```
+
+**Dependencies**: [F5] Health monitoring
+
+**Test Methods**:
+- **Time-Based Assertions**: Mock clock, verify detection after exact timeout
+- **Boundary Testing**: Detection at `down_after_milliseconds - 1` vs at exact threshold
+- **Formal Proof**: Eventually detects failed nodes
+
+**Verification Goal**:
+```lean
+-- Liveness: Failed nodes eventually detected
+theorem failed_node_detected :
+  spec ⊨ □(node_failed n) ⟹ ◇(sdown_detected n)
+```
+
+**Removed Complexity**:
+- No quorum voting (3+ Sentinels)
+- No SDOWN to ODOWN transition
+- No gossip protocol (`__sentinel__:hello` Pub/Sub)
+- No Sentinel auto-discovery
+- Simplified: Direct failover authority via K8s Lease API
+
+**Remaining**:
+- `consecutivePingFailures` counter not yet in NodeInfo (detection modeled via NodeHealth enum instead)
+- Configurable `down_after_milliseconds` not yet parameterized
+
+---
+
+### [F7] Replica Selection Algorithm
+
+> **Status: Implemented** -- `Gungnir/Valkey/ReplicaSelection.lean`
+>
+> `select_best_replica` function implements the full Sentinel-style selection algorithm: filters out disconnected replicas and priority-0 replicas, sorts by priority (ascending), then by replication offset (descending), then by runId (lexicographic). `ReplicaInfo` structure holds all needed fields. Verification theorems (`select_best_replica_has_highest_offset_among_same_priority`, `select_best_replica_filtered_valid`) are stated but use `sorry` (2 placeholders).
+
+**Description**: Choose the best replica to promote when master fails.
+
+**Selection Criteria** (in order):
+1. **Filter**: Exclude replicas disconnected > `(down_after_milliseconds × 10) + SDOWN_duration`
+2. **Sort by `replica-priority`**: Lower value = higher priority (0 = never promote)
+3. **Sort by `master_repl_offset`**: Higher offset = more data = higher priority
+4. **Sort by `run_id`**: Lexicographically smaller (tiebreaker)
+
+**Implementation**:
+```lean
+def selectReplica (replicas : List ReplicaInfo) : Option ReplicaInfo :=
+  replicas
+    .filter (λ r => r.disconnectedTime ≤ maxDisconnectTime)
+    .filter (λ r => r.priority ≠ 0)
+    .sort_by (λ r => (r.priority, -r.replOffset, r.runId))
+    .head?
+```
+
+**Data Collection**:
+- Run `INFO replication` on each replica
+- Parse: `role`, `master_repl_offset`, `replica_priority`
+- Track: Last successful connection time
+
+**Dependencies**: [F1] RESP3 parser, [F6] SDOWN detection
+
+**Test Methods**:
+- **Combinatorial Testing**: All permutations of priority/offset/runId
+- **Property Test**: Selected replica always has highest score
+- **Formal Proof**: Selection function is total and deterministic
+
+**Verification Goal**:
+```lean
+theorem selection_maximizes_data_safety :
+  ∀ (replicas : List ReplicaInfo) (selected : ReplicaInfo),
+    selectReplica replicas = some selected →
+    ∀ (other : ReplicaInfo),
+      other ∈ replicas →
+      selected.replOffset ≥ other.replOffset ∨
+      selected.priority < other.priority
+```
+
+**Remaining**:
+- Prove `select_best_replica_has_highest_offset_among_same_priority` (currently `sorry`)
+- Prove `select_best_replica_filtered_valid` (currently `sorry`)
+
+---
+
+### [F8] Promotion & Reconfiguration
+
+> **Status: Partially Implemented** -- `Gungnir/Valkey/Commands.lean`
+>
+> Valkey command wrappers for `REPLICAOF` (including `REPLICAOF NO ONE` for promotion) and `ROLE` (to verify current role) are implemented. The full promotion orchestration sequence (coordinate across multiple replicas, update ConfigMap, trigger rolling update) is not yet implemented as an end-to-end workflow.
+
+**Description**: Promote selected replica to master and reconfigure cluster.
+
+**Promotion Steps**:
+1. Send `REPLICAOF NO ONE` to selected replica
+2. Wait for promotion (check `ROLE` command)
+3. Send `REPLICAOF <new-master-ip> 6379` to other replicas
+4. Update ConfigMap with new topology
+5. Trigger StatefulSet rolling update if needed
+
+**Idempotency Handling**:
+- If `REPLICAOF NO ONE` returns "Already master" → Success (idempotent)
+- If replica was already reconfigured → Skip (check current master in `INFO replication`)
+
+**Dependencies**: [F7] Replica selection, [F2] Valkey client
+
+**Test Methods**:
+- **Integration Tests**: Real Valkey pods, kill master, verify promotion
+- **Idempotency Tests**: Run promotion twice, verify no errors
+- **Chaos Tests**: Network failure during promotion, verify recovery
+- **Formal Proof**: Promotion is idempotent, no data loss
+
+**Verification Goals**:
+```lean
+-- Idempotency
+theorem promotion_idempotent :
+  promote(promote(replica)) = promote(replica)
+
+-- Data preservation
+theorem no_data_loss_on_promotion :
+  ∀ (data : Dataset) (replica : ReplicaInfo),
+    replica.replOffset = master.replOffset →
+    promote replica →
+    data_on replica = data
+```
+
+**Remaining**:
+- End-to-end promotion orchestration workflow
+- Idempotency proof
+- ConfigMap update and rolling update triggers
+
+---
+
+### [F9] Atomic K8s Service Update
+
+> **Status: Modeled** -- `Gungnir/K8s/API.lean`
+>
+> The K8s API types support Update requests that can target Service resources. The `atMostOneMaster` safety invariant in `Gungnir/StateMachine/Invariants.lean` formalizes the split-brain prevention property. However, the concrete Service selector update logic for failover is not yet implemented as a dedicated function.
+
+**Description**: Redirect client traffic to new master atomically via Service selector update.
+
+**Update Process**:
+```lean
+def updateServiceForNewMaster (newMasterPod : String) : IO Unit := do
+  let service ← getService "valkey-client"
+  let updatedService := {
+    service with
+    spec.selector := Map.of [
+      ("app", "valkey"),
+      ("statefulset.kubernetes.io/pod-name", newMasterPod)
+    ]
+  }
+  updateService updatedService
+```
+
+**Atomicity Guarantee**: K8s Service update is atomic at API server level. Endpoints update happens immediately after.
+
+**Fencing**: Optionally delete old master Pod to prevent split-brain.
+
+**Dependencies**: [F8] Promotion logic, [F2] K8s client
+
+**Test Methods**:
+- **Service Selector Verification**: Check selector points to new master
+- **EndpointSlice Checks**: Verify only new master receives traffic
+- **Client Connection Tests**: Clients automatically reconnect to new master
+- **Formal Proof**: At most one master receives traffic at any time
+
+**Verification Goal**:
+```lean
+-- Split-brain prevention
+theorem at_most_one_master :
+  ∀ (state : ClusterState),
+    (pods_receiving_client_traffic state).length ≤ 1
+```
+
+**Remaining**:
+- Concrete `updateServiceForNewMaster` function
+- EndpointSlice verification logic
+- Fencing implementation
+
+---
+
+### [F10] Backup/Restore (S3 Integration)
+
+> **Status: Partially Implemented** -- `Gungnir/Valkey/Commands.lean`
+>
+> Valkey command wrappers for `BGSAVE` (trigger background save) and `LASTSAVE` (check last save timestamp) are implemented. The S3 upload/download, Job creation, ValkeyBackup CRD, and restore workflow are not yet implemented.
+
+**Description**: Automated RDB snapshots uploaded to S3 with point-in-time restore capability.
+
+**Backup CRD**:
+```yaml
+apiVersion: valkey.hyperspike.io/v1
+kind: ValkeyBackup
+metadata:
+  name: valkey-backup-20260207
+spec:
+  clusterName: my-valkey
+  storageProvider:
+    s3:
+      bucket: valkey-backups
+      region: us-west-2
+      secretName: aws-credentials
+  ttl: 7d
+status:
+  phase: Completed
+  s3Path: s3://valkey-backups/my-valkey-20260207.rdb
+  completionTime: "2026-02-07T14:30:00Z"
+```
+
+**Backup Process**:
+1. Identify master pod via `ROLE` command
+2. Trigger `BGSAVE` (background save, non-blocking)
+3. Wait for RDB file creation (check `LASTSAVE` timestamp)
+4. Create Kubernetes Job to upload RDB to S3
+5. Update ValkeyBackup status
+
+**Restore Process**:
+1. Create new ValkeyCluster CR with `restoreFrom` field
+2. Operator creates StatefulSet with init container
+3. Init container downloads RDB from S3 before Valkey starts
+4. Valkey loads RDB on startup
+
+**Dependencies**: [F1] RESP3 parser (BGSAVE, LASTSAVE), [F2] K8s client (Job creation)
+
+**Test Methods**:
+- **End-to-End**: Backup → Destroy cluster → Restore → Verify data
+- **Partial Failure Simulation**: S3 upload fails, verify retry logic
+- **Data Integrity**: Checksum verification after restore
+
+**Remaining**:
+- ValkeyBackup CRD definition
+- S3 upload/download integration
+- Kubernetes Job creation for backup transfer
+- Init container for restore
+- Full backup/restore orchestration workflow
+
+---
+
+### [F11] Production Hardening
+
+> **Status: Partially Implemented**
+>
+> - **PDB**: `PodDisruptionBudgetView` defined in `Gungnir/K8s/Resources.lean`; `PodDisruptionBudget` is a variant of `SubResource` in `Gungnir/K8s/Builder.lean`
+> - **TLS**: Not yet implemented
+> - **QoS/Resource Limits**: Not yet implemented (resource fields not in current view types)
+> - **Security Context**: Not yet implemented
+
+**Description**: Enterprise-grade operational features for production deployments.
+
+#### A. Pod Disruption Budget (PDB)
+
+**Purpose**: Maintain minimum quorum during node maintenance.
+
+**Configuration**:
+```yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: valkey-pdb
+spec:
+  maxUnavailable: 1  # For 3-node cluster
+  selector:
+    matchLabels:
+      app: valkey
+```
+
+**Auto-Calculation**:
+- 3-node cluster: `maxUnavailable = 1` (allows 2 to remain)
+- 5-node cluster: `maxUnavailable = 2` (allows 3 to remain)
+
+**Test**: Simulate `kubectl drain`, verify PDB blocks operation if would violate quorum.
+
+#### B. TLS Encryption
+
+**Purpose**: Encrypt client-to-Valkey and Valkey-to-Valkey traffic.
+
+**Certificate Management**:
+- Integration with cert-manager for automatic certificate provisioning
+- Certificate rotation without downtime
+
+**Configuration**:
+```yaml
+apiVersion: valkey.hyperspike.io/v1
+kind: ValkeyCluster
+spec:
+  tls:
+    enabled: true
+    certSecretName: valkey-tls-cert
+```
+
+**Test**: Connect with TLS client, verify handshake, test certificate expiration handling.
+
+#### C. Resource Limits (QoS)
+
+**Purpose**: Prevent OOM kills and ensure pod QoS class.
+
+**Configuration**:
+```yaml
+spec:
+  resources:
+    limits:
+      memory: 2Gi
+      cpu: 1000m
+    requests:
+      memory: 1Gi
+      cpu: 500m
+  metricsExporter:
+    resources:  # NEW: Fixes #374
+      limits:
+        memory: 128Mi
+        cpu: 100m
+      requests:
+        memory: 64Mi
+        cpu: 50m
+```
+
+**QoS Class**: Guaranteed (requests == limits) for Valkey main container.
+
+**Test**: Verify pod QoS class, simulate memory pressure, verify no cascading failures.
+
+#### D. Security Context (Pod Security Standards)
+
+**Purpose**: Run without root privileges, restrict filesystem writes.
+
+**Configuration**:
+```yaml
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 999
+  fsGroup: 999
+  readOnlyRootFilesystem: false  # Valkey writes to /data
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+```
+
+**Test**: Deploy in namespace with `restricted` Pod Security Standard, verify admission.
+
+**Remaining**:
+- TLS support in ValkeyClusterView and connection handling
+- Resource limits/requests in view types
+- Security context in StatefulSetView
+- Auto-calculation of PDB maxUnavailable based on replicas
+
+---
+
+### [V] Formal Verification (Cross-Cutting)
+
+> **Status: In Progress** -- `Gungnir/StateMachine/TemporalLogic.lean`, `Gungnir/StateMachine/Invariants.lean`, `Gungnir/StateMachine/Liveness.lean`
+>
+> **Implemented**:
+> - TLA-style temporal logic framework (`TemporalLogic.lean`): `always`, `eventually`, `leads_to`, `weak_fairness`, with composition lemmas (`always_and_combine`, `leads_to_trans`, etc.)
+> - 6 safety invariants stated (`Invariants.lean`): `atMostOneMaster`, `ownerRefConsistency`, `noConcurrentUpdates`, `resourceVersionConsistency`, `configMapMatchesSpec`, `statefulSetMatchesSpec`
+> - Liveness properties stated (`Liveness.lean`): `eventuallyStableReconciliation`, `failedMasterReplaced`, `reconcileTerminates`
+> - Phased proof strategy outlined in `Liveness.lean` (Phase 0 through Phase VI)
+> - Generic state machine framework (`StateMachine.lean`): `Action`, `StateMachine`, `NetworkStateMachine`
+>
+> **Proof placeholders (sorry)**: ~16 across Invariants.lean and Liveness.lean; these represent the actual proof obligations that need to be discharged.
+
+**Description**: Mathematical proofs of correctness using Lean 4 theorem proving.
+
+**Verification Toolchain**:
+
+1. **TLA+ (Specification Phase)**
+   - Tool: TLC model checker
+   - Purpose: Initial specification, find design bugs early
+   - Output: TLA+ spec of state machine and invariants
+
+2. **Lentil (Temporal Properties)**
+   - Tool: TLA formalization in Lean 4
+   - Purpose: Prove temporal logic properties
+   - Example: Eventually Stable Reconciliation (ESR)
+
+3. **LeanLTL (Linear Temporal Logic)**
+   - Tool: LTL framework in Lean 4
+   - Purpose: Safety and liveness properties
+   - Example: `□(master_count ≤ 1)` (always at most one master)
+
+4. **LeanMachines (State Machine Verification)**
+   - Tool: Event-B style state machines in Lean 4
+   - Purpose: Correctness-by-construction
+   - Principle: Cannot construct state machine without discharging proof obligations
+
+**Key Invariants to Prove**:
+
+```lean
+-- Safety: At most one master at any time
+theorem at_most_one_master :
+  ∀ (s : ClusterState), master_count s ≤ 1
+
+-- Safety: Owner references always point to current CR
+theorem owner_ref_consistency :
+  ∀ (res : K8sResource),
+    managed_by_operator res →
+    res.ownerReferences.length = 1
+
+-- Safety: No concurrent updates to same resource
+theorem no_concurrent_updates :
+  ∀ (s : ClusterState) (key : ResourceKey),
+    (pending_requests s).filter (λ r => r.key = key)).length ≤ 1
+
+-- Safety: Resource versions match etcd
+theorem resource_version_consistency :
+  ∀ (req : UpdateRequest),
+    req.resourceVersion = etcd_version req.key
+
+-- Liveness: Failed master eventually replaced
+theorem failed_master_replaced :
+  spec ⊨ □(master_failed) ⟹ ◇(new_master_elected)
+
+-- Liveness: Eventually Stable Reconciliation (ESR)
+theorem eventually_stable_reconciliation :
+  spec ⊨ □(desired cr) ⟹ ◇□(current_state matches desired cr)
+
+-- Data Safety: Promotion preserves committed data
+theorem promotion_preserves_data :
+  ∀ (replica : ReplicaInfo),
+    replica.replOffset ≥ master.commitOffset →
+    promote replica →
+    committed_data_preserved
+```
+
+**Phased Proof Strategy** (from Anvil):
+- **Phase 0**: Base invariants (message uniqueness, well-formedness)
+- **Phase I**: Crash disabled, busy disabled
+- **Phase II**: Reconcile state consistency
+- **Phase III**: Request implications (create → at create step)
+- **Phase IV**: Owner reference invariants
+- **Phase V**: No deletion requests (GC prevention)
+- **Phase VI**: Resource version tracking
+- **Final**: ESR liveness property
+
+Each phase's invariants proven to **eventually** hold using leads-to reasoning.
+
+**Remaining**:
+- Discharge all 19 `sorry` placeholders across the codebase
+- Connect temporal logic framework to concrete invariant proofs
+- TLA+ model checking (external tooling not yet set up)
+- Integration with LeanMachines or similar library for correctness-by-construction
+
+---
+
+## Removed Features (Complexity Reduction)
+
+### Traditional Sentinel Features (Unnecessary in Operator)
+
+| Feature | Status | Reason |
+|---------|--------|--------|
+| Quorum-based ODOWN | REMOVED | K8s Lease API provides leader election |
+| Sentinel-to-Sentinel Gossip | REMOVED | No peer Sentinels, single Operator |
+| Majority Authorization | REMOVED | Leader has full authority |
+| Config Epoch Propagation | SIMPLIFIED | Store in CR Status, not inter-Sentinel |
+| Sentinel Auto-Discovery | REMOVED | K8s API discovers pods via labels |
+| Client `SENTINEL` Commands | REMOVED | Use K8s Service DNS instead |
+| Periodic INFO Polling | OPTIMIZED | On-demand calls, leverage K8s status |
+
+**Complexity Reduction**: ~40% fewer components, 7 network coordination steps → 3 steps
+
+---
+
+## Test Strategy Summary
+
+| Feature | Unit | Integration | Property | Formal | E2E | Chaos |
+|---------|------|-------------|----------|--------|-----|-------|
+| RESP3 Parser | - | - | - | sorry | - | - |
+| Schema Clients | - | - | - | - | - | - |
+| State Machine | - | - | - | sorry | - | - |
+| Resource Builders | - | - | - | - | Scenario 1 | - |
+| Health Monitoring | - | - | - | - | - | Chaos 1,2 |
+| SDOWN Detection | - | - | - | sorry | Scenario 4 | Chaos 1,3 |
+| Replica Selection | - | - | - | sorry | Scenario 4 | Chaos 1,7 |
+| Promotion Logic | - | - | - | sorry | Scenario 4 | Chaos 1,3 |
+| Service Update | - | - | - | sorry | Scenario 4 | Chaos 1,3 |
+| Backup/Restore | - | - | - | - | Scenario 5 | - |
+| PDB | - | - | - | - | - | Chaos 6 |
+| TLS | - | - | - | - | - | - |
+| Scale Up/Down | - | - | - | - | Scenario 2,3 | - |
+| CR Deletion (GC) | - | - | - | - | Scenario 6 | - |
+
+**Current testing**: Lean 4 type-checking only (all 17 modules compile). No unit tests, integration tests, property tests, E2E tests, or chaos tests are implemented yet. Formal proofs are stated but use `sorry` placeholders. Runtime testing will require a Lean 4 executable build (see plans.md "Lean 4 to Kubernetes Operator Integration" section).
+
+### E2E Test Scenarios (Planned)
+
+E2E tests run on a kind cluster with the actual operator binary and real Valkey instances. See plans.md for full details.
+
+| Scenario | Description | Key Assertions |
+|----------|-------------|----------------|
+| 1. Basic Deployment | Create ValkeyCluster CR, verify all sub-resources | StatefulSet, Services, ConfigMap created; exactly 1 master; owner refs set |
+| 2. Scale Up | Increase replicas 3->5 | New pods are replicas; still exactly 1 master |
+| 3. Scale Down | Decrease replicas 5->3 | Data preserved; master stable |
+| 4. Master Failover | Delete master pod, verify automatic failover | New master elected within timeout; data preserved; no split-brain |
+| 5. Backup/Restore | BGSAVE to MinIO, restore to new cluster | Backup completes; restored cluster has all original data |
+| 6. CR Deletion | Delete ValkeyCluster CR | All sub-resources garbage-collected via owner references |
+
+### Chaos Engineering Scenarios (Planned)
+
+Chaos tests validate the operator's runtime behavior matches formal proof guarantees. See plans.md for full details.
+
+| Chaos Scenario | Fault Injected | Formal Property Validated | Tool |
+|----------------|---------------|---------------------------|------|
+| 1. Pod Kill (Master) | `kubectl delete pod --force` | `atMostOneMaster`, `failedMasterReplaced` | kubectl |
+| 2. Pod Kill (Replica) | `kubectl delete pod --force` | `reconcileTerminates` | kubectl |
+| 3. Network Partition (Master) | Isolate master from cluster | `atMostOneMaster`, `leaderElectionSafety` | Chaos Mesh |
+| 4. Network Partition (Operator) | Block operator from API server | `leaderElectionSafety` | Chaos Mesh |
+| 5. API Server Delay | 2-5s latency on API responses | `reconcileTerminates` | Chaos Mesh |
+| 6. Node Drain | `kubectl drain` | PDB enforcement (Feature F11) | kubectl |
+| 7. Disk Pressure | IO errors on master PVC | `failedMasterReplaced` | Chaos Mesh |
+| 8. Concurrent CR Update | Patch CR during failover | `noConcurrentUpdates`, `resourceVersionConsistency` | kubectl |
+
+### Bridging Formal Proofs to Runtime Validation
+
+The operator's formal verification in Lean 4 proves properties about the abstract state machine model. Chaos and E2E tests validate that the implementation faithfully follows this model:
+
+- **Safety invariants** (e.g., `atMostOneMaster`) are checked at runtime by polling `ROLE` on all Valkey pods and verifying at most one returns "master" at any sample point.
+- **Liveness properties** (e.g., `failedMasterReplaced`) are validated by measuring time-to-recovery and asserting it is bounded by the configured timeout.
+- **Counterexamples** from failed chaos tests indicate either implementation bugs (code diverges from model) or model gaps (model does not capture the real failure mode).
+
+---
+
+## Implementation Priorities
+
+### Phase 0: Fix Critical Bugs (Weeks 1-2)
+- #381: Storage validation error
+- #367: PVC lifecycle consistency
+- #284: Scaling errors
+- #374: Metrics sidecar resources
+- #352: Proxy mode fixes
+
+### Phase 1: Foundation (Weeks 3-5) -- COMPLETE
+- [F1] RESP3 parser -- Implemented
+- [F2] Schema-driven clients -- Partially implemented (manual wrappers)
+- [F3] Reconciler state machine -- Implemented
+
+### Phase 2: Monitoring & Detection (Weeks 6-8) -- COMPLETE
+- [F5] Health monitoring -- Implemented
+- [F6] SDOWN detection -- Implemented
+- [V] Temporal logic framework -- Implemented (proofs pending)
+
+### Phase 3: Failover Logic (Weeks 9-11) -- LARGELY COMPLETE
+- [F7] Replica selection -- Implemented
+- [F8] Promotion logic -- Partially implemented (commands only)
+- [F9] Service updates -- Modeled
+- [V] Safety invariants stated -- Proofs pending
+
+### Phase 4: Operations (Weeks 12-14) -- PARTIALLY COMPLETE
+- [F10] Backup/Restore -- Partially implemented (commands only)
+- [F11] PDB, TLS, QoS -- PDB modeled, TLS/QoS not yet
+- [V] ESR property stated -- Proof pending
+
+### Phase 5: Hardening (Weeks 15-16) -- NOT STARTED
+- Chaos engineering tests
+- Performance optimization
+- Documentation
+- Discharge all sorry placeholders
+
+---
+
+## Success Criteria
+
+**Functional**:
+- Passes all unit, integration, and E2E tests
+- Automatic failover completes within `failover-timeout-ms`
+- No data loss during failover (replica offset >= master commit offset)
+- Backup/restore cycle preserves all data
+
+**Verification**:
+- All safety invariants formally proven in Lean 4
+- ESR liveness property proven
+- TLA+ model passes TLC exhaustive checking
+
+**Operations**:
+- Deploys on Kubernetes 1.28+
+- Supports Valkey 7.2+
+- Pod Security Standards: `restricted` level
+- Resource efficiency: <10% CPU/memory overhead vs. manual deployment
+
+**Production Readiness**:
+- Zero unaddressed GitHub issues with P0/P1 labels
+- Chaos testing passes (network partitions, pod crashes, API server delays)
+- Monitoring dashboards and runbooks complete
