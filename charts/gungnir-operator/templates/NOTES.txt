@@ -1,0 +1,25 @@
+Gungnir Operator has been installed.
+
+1. Check the operator is running:
+
+    kubectl get pods -n {{ include "gungnir-operator.namespace" . }} -l {{ include "gungnir-operator.selectorLabels" . | replace ": " "=" | replace "\n" "," }}
+
+2. Create a ValkeyCluster:
+
+    cat <<EOF | kubectl apply -f -
+    apiVersion: valkey.verilean.io/v1
+    kind: ValkeyCluster
+    metadata:
+      name: my-valkey
+    spec:
+      replicas: 3
+      image: valkey/valkey:7.2
+    EOF
+
+3. Check the cluster status:
+
+    kubectl get valkeycluster
+
+4. View operator logs:
+
+    kubectl logs -f -l app.kubernetes.io/name={{ include "gungnir-operator.name" . }} -n {{ include "gungnir-operator.namespace" . }}

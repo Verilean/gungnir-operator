@@ -1,0 +1,17 @@
+apiVersion: v2
+name: gungnir-operator
+description: A formally verified Valkey Operator for Kubernetes, built with Lean 4
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/verilean/gungnir-operator
+sources:
+  - https://github.com/verilean/gungnir-operator
+keywords:
+  - valkey
+  - redis
+  - operator
+  - formal-verification
+  - lean4
+maintainers:
+  - name: verilean

@@ -10,3 +10,6 @@ package gungnir where
 @[default_target]
 lean_lib Gungnir where
   globs := #[.submodules `Gungnir]
+
+lean_exe gungnir_operator where
+  root := `Gungnir.Main

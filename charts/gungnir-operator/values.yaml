@@ -1,0 +1,79 @@
+# Gungnir Operator Helm Chart Values
+
+# Operator image configuration
+image:
+  repository: ghcr.io/verilean/gungnir-operator
+  tag: ""  # Defaults to Chart.appVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Number of operator replicas (2 for HA with leader election)
+replicaCount: 2
+
+# Leader election configuration
+leaderElection:
+  enabled: true
+  leaseName: gungnir-operator-lease
+  leaseDuration: 15
+
+# Operator runtime configuration
+operator:
+  # Namespace to watch ("" means all namespaces)
+  watchNamespace: ""
+  # Health check PING interval
+  pingIntervalMs: 1000
+  # Reconcile loop interval
+  reconcileIntervalMs: 10000
+  # SDOWN detection threshold
+  downAfterMs: 5000
+  # Log verbosity (0=error, 1=info, 2=debug)
+  verbosity: 1
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Pod-level configuration
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  fsGroup: 65534
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Liveness and readiness probes
+livenessProbe:
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3

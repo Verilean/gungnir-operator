@@ -1,0 +1,160 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: valkeyclusters.valkey.verilean.io
+  labels:
+    app.kubernetes.io/name: gungnir-operator
+spec:
+  group: valkey.verilean.io
+  names:
+    kind: ValkeyCluster
+    listKind: ValkeyClusterList
+    plural: valkeyclusters
+    singular: valkeycluster
+    shortNames:
+      - vc
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - replicas
+              properties:
+                replicas:
+                  type: integer
+                  minimum: 1
+                  default: 3
+                  description: Number of Valkey replicas (must be >= 3 for HA)
+                image:
+                  type: string
+                  default: "valkey/valkey:7.2"
+                  description: Valkey container image
+                port:
+                  type: integer
+                  default: 6379
+                  description: Valkey listen port
+                persistence:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: true
+                    storageSize:
+                      type: string
+                      default: "1Gi"
+                    storageClassName:
+                      type: string
+                resources:
+                  type: object
+                  properties:
+                    requests:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    limits:
+                      type: object
+                      additionalProperties:
+                        type: string
+                tls:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    certSecretName:
+                      type: string
+                sentinel:
+                  type: object
+                  properties:
+                    pingIntervalMs:
+                      type: integer
+                      default: 1000
+                      description: PING health check interval in milliseconds
+                    downAfterMs:
+                      type: integer
+                      default: 5000
+                      description: Time before marking a node as SDOWN
+                    failoverTimeoutMs:
+                      type: integer
+                      default: 60000
+                      description: Maximum time to wait for failover to complete
+                labels:
+                  type: object
+                  additionalProperties:
+                    type: string
+                annotations:
+                  type: object
+                  additionalProperties:
+                    type: string
+                nodeSelector:
+                  type: object
+                  additionalProperties:
+                    type: string
+                restoreFrom:
+                  type: object
+                  properties:
+                    backupName:
+                      type: string
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Creating
+                    - Running
+                    - Updating
+                    - Failing
+                    - Failed
+                masterPod:
+                  type: string
+                readyReplicas:
+                  type: integer
+                currentMaster:
+                  type: string
+                lastReconcileTime:
+                  type: string
+                  format: date-time
+                nodeStatuses:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      podName:
+                        type: string
+                      role:
+                        type: string
+                        enum: ["Master", "Replica", "Unknown"]
+                      healthy:
+                        type: boolean
+                      lastPingSuccess:
+                        type: integer
+                      consecutivePingFailures:
+                        type: integer
+                      replOffset:
+                        type: integer
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Replicas
+          type: integer
+          jsonPath: .spec.replicas
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Master
+          type: string
+          jsonPath: .status.masterPod
+        - name: Ready
+          type: integer
+          jsonPath: .status.readyReplicas
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

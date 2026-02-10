@@ -21,5 +21,25 @@ RUN lake update
 # Copy source code
 COPY Gungnir/ Gungnir/
 
-# Build the project
+# Build both the library and the executable
 RUN lake build
+RUN lake build gungnir_operator
+
+# Runtime stage -- minimal image
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    netcat-openbsd \
+    && curl -Lo /usr/local/bin/kubectl \
+       "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+    && chmod +x /usr/local/bin/kubectl \
+    && apt-get remove -y curl \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/.lake/build/bin/gungnir_operator /usr/local/bin/
+
+USER 65534:65534
+ENTRYPOINT ["/usr/local/bin/gungnir_operator"]

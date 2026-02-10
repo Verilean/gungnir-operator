@@ -155,7 +155,7 @@ def wellFormed (vc : ValkeyClusterView) : Prop :=
   vc.metadata.name.isSome ∧ vc.metadata.«namespace».isSome ∧ vc.metadata.uid.isSome
 
 /-- The K8s apiVersion string for ValkeyCluster CRD. -/
-def apiVersion : String := "valkey.hyperspike.io/v1"
+def apiVersion : String := "valkey.verilean.io/v1"
 
 /-- Generate the controller owner reference for this CR.
     All managed sub-resources must carry this owner ref. -/

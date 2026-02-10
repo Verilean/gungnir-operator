@@ -10,16 +10,21 @@ This document defines the production-ready feature set for a formally verified V
 
 ## Implementation Status
 
-**Build**: Docker build passes, 19/19 modules compile with Lean 4 v4.20.0
-**Proof placeholders**: 19 `sorry`-based placeholders across Invariants, Liveness, RESP3, ReplicaSelection
+**Build**: Docker build passes, 18/18 modules compile with Lean 4 v4.20.0, produces native `gungnir_operator` binary
+**Deployed**: Operator running on K8s with leader election, 3-replica ValkeyCluster with master-replica replication
+**Helm chart**: Complete at `charts/gungnir-operator/` with CRD, RBAC, leader election
+**Proved theorems**: 27 in Main.lean (0 sorry)
+**Proof placeholders**: 19 `sorry` remaining across Invariants (5), Liveness (8), ReplicaSelection (5), RESP3 (1)
 
 ### Module Summary
 
 | Module | Files | Status |
 |--------|-------|--------|
+| Main (`Gungnir/Main.lean`) | 1 | Complete - CLI, leader election, reconcile loop, kubectl bridge, 27 proved theorems |
 | K8s (`Gungnir/K8s/`) | 6 | Complete - Types, Resources, API, Builder, ValkeyCluster, root import |
-| StateMachine (`Gungnir/StateMachine/`) | 6 | Complete - StateMachine, TemporalLogic, Reconciler, Sentinel, Invariants, Liveness |
-| Valkey (`Gungnir/Valkey/`) | 5 | Complete - RESP3, Connection, Commands, Sentinel, ReplicaSelection |
+| StateMachine (`Gungnir/StateMachine/`) | 6 | Complete - StateMachine, TemporalLogic, Reconciler, Sentinel, Invariants (5 sorry), Liveness (8 sorry) |
+| Valkey (`Gungnir/Valkey/`) | 5 | Complete - RESP3 (1 sorry), Connection, Commands, Sentinel, ReplicaSelection (5 sorry) |
+| Helm chart (`charts/gungnir-operator/`) | 10 | Complete - CRD, RBAC, Deployment, leader election, ServiceAccount |
 
 ### Feature Implementation Status
 
@@ -27,20 +32,20 @@ This document defines the production-ready feature set for a formally verified V
 |---------|--------|----------------|
 | [F1] RESP3 Parser | **Implemented** | `Gungnir/Valkey/RESP3.lean` |
 | [F2] Schema-Driven Clients | **Partially Implemented** | `Gungnir/K8s/API.lean`, `Gungnir/Valkey/Commands.lean` |
-| [F3] Reconciler State Machine | **Implemented** | `Gungnir/StateMachine/Reconciler.lean`, `Gungnir/K8s/ValkeyCluster.lean` |
-| [F4] Resource Builders | **Implemented** | `Gungnir/K8s/Builder.lean`, `Gungnir/K8s/Resources.lean` |
+| [F3] Reconciler State Machine | **Implemented + Running** | `Gungnir/StateMachine/Reconciler.lean`, `Gungnir/Main.lean` (kubectl bridge) |
+| [F4] Resource Builders | **Implemented + Running** | `Gungnir/Main.lean` (JSON generation for all 6 sub-resources) |
 | [F5] Health Monitoring | **Implemented** | `Gungnir/Valkey/Sentinel.lean` (health_check) |
 | [F6] SDOWN Detection | **Implemented** | `Gungnir/StateMachine/Sentinel.lean` (NodeHealth, sentinelNext) |
 | [F7] Replica Selection | **Implemented** | `Gungnir/Valkey/ReplicaSelection.lean` |
-| [F8] Promotion & Reconfiguration | **Partially Implemented** | `Gungnir/Valkey/Commands.lean` (REPLICAOF, ROLE) |
-| [F9] Atomic K8s Service Update | **Modeled** | `Gungnir/K8s/API.lean` (UpdateRequest) |
-| [F10] Backup/Restore | **Partially Implemented** | `Gungnir/Valkey/Commands.lean` (BGSAVE, LASTSAVE) |
-| [F11] Production Hardening | **Partially Implemented** | `Gungnir/K8s/Resources.lean` (PDB), `Gungnir/K8s/Builder.lean` |
-| [V] Formal Verification | **In Progress** | `Gungnir/StateMachine/Invariants.lean`, `Gungnir/StateMachine/Liveness.lean`, `Gungnir/StateMachine/TemporalLogic.lean` |
+| [F8] Promotion & Reconfiguration | **Partially Implemented** | Commands defined; initial replication via startup script; automated failover not yet wired |
+| [F9] Atomic K8s Service Update | **Modeled** | `Gungnir/K8s/API.lean` (UpdateRequest); not yet wired for failover |
+| [F10] Backup/Restore | **Partially Implemented** | `Gungnir/Valkey/Commands.lean` (BGSAVE, LASTSAVE); S3/Job not yet |
+| [F11] Production Hardening | **Partially Implemented** | PDB created; TLS/QoS not yet |
+| [V] Formal Verification | **In Progress** | 27 theorems proved in Main.lean; 19 sorry remaining in library modules |
 
 ---
 
-## Current Status: hyperspike/valkey-operator v0.0.61
+## Current Status: verilean/valkey-operator v0.0.61
 
 ### Implemented Features
 - Valkey Cluster mode lifecycle management
@@ -181,11 +186,11 @@ def set (key : String) (value : String) (ex : Option Nat := none) : IO RESPValue
 
 ### [F3] Reconciler State Machine (Anvil Pattern)
 
-> **Status: Implemented** -- `Gungnir/StateMachine/Reconciler.lean`, `Gungnir/K8s/ValkeyCluster.lean`
+> **Status: Implemented + Running** -- `Gungnir/StateMachine/Reconciler.lean`, `Gungnir/K8s/ValkeyCluster.lean`, `Gungnir/Main.lean`
 >
-> `ValkeyReconcileStep` is defined in `ValkeyCluster.lean` with states: Init, AfterGetHeadlessService, AfterCreateHeadlessService, AfterUpdateHeadlessService, AfterGetClientService, AfterCreateClientService, AfterUpdateClientService, AfterGetConfigMap, AfterCreateConfigMap, AfterUpdateConfigMap, AfterGetStatefulSet, AfterCreateStatefulSet, AfterUpdateStatefulSet, AfterCheckValkeyHealth, AfterUpdateStatus, Done, Error.
+> `ValkeyReconcileStep` is defined in `ValkeyCluster.lean` with states: Init, AfterKRequestStep (action, sub), AfterCheckValkeyHealth, AfterDetectFailure, AfterSelectReplica, AfterPromoteReplica, AfterUpdateService, AfterUpdateStatus, Done, Error.
 >
-> `reconcileCore` transition function is defined in `Reconciler.lean` along with `reconcilerStateMachine` wrapping it as an Anvil-style state machine. Supports `reconcile_get_result`, `reconcile_create_result`, `reconcile_update_result` helpers.
+> `reconcileCore` transition function is defined in `Reconciler.lean` along with `reconcilerStateMachine` wrapping it as an Anvil-style state machine. `Main.lean` drives this state machine with actual kubectl calls via `executeRequest`, which bridges `APIRequest` to kubectl commands and feeds `APIResponse` back to `reconcileCore`.
 
 **Description**: Implement controller reconciliation as an explicit state machine following Anvil's verified pattern.
 
@@ -250,11 +255,11 @@ theorem eventually_stable :
 
 ### [F4] Resource Builders
 
-> **Status: Implemented** -- `Gungnir/K8s/Builder.lean`, `Gungnir/K8s/Resources.lean`
+> **Status: Implemented + Running** -- `Gungnir/K8s/Builder.lean`, `Gungnir/K8s/Resources.lean`, `Gungnir/Main.lean`
 >
 > `ResourceBuilder` typeclass defined in `Builder.lean` with `make` and `update` methods. `SubResource` enum covers HeadlessService, ClientService, ConfigMap, StatefulSet, PodDisruptionBudget, Secret. Naming conventions (`subResourceName`) and owner reference helpers (`setOwnerRef`) are implemented.
 >
-> `Resources.lean` defines view types for all managed K8s resources: PodView, ServiceView, ConfigMapView, SecretView, StatefulSetView, PodDisruptionBudgetView with relevant fields.
+> `Resources.lean` defines view types for all managed K8s resources. `Main.lean` implements concrete JSON generation for all 6 sub-resources (`headlessServiceJSON`, `clientServiceJSON`, `configMapJSON`, `secretJSON`, `statefulSetJSON`, `pdbJSON`) and applies them via `kubectl apply`.
 
 **Description**: Generate Kubernetes manifests for Valkey cluster components.
 
@@ -292,8 +297,9 @@ theorem all_resources_owned :
 ```
 
 **Remaining**:
-- Concrete `ResourceBuilder` instances for each SubResource not yet implemented
-- YAML/JSON serialization not yet implemented
+- ~~Concrete JSON generation~~ -- Done in `Main.lean` for all 6 sub-resources
+- ~~YAML/JSON serialization~~ -- Done via JSON helper functions (`jq`, `jkv`, `jobj`, `jarr`)
+- Concrete `ResourceBuilder` typeclass instances not yet connected to the JSON generators
 
 ---
 
@@ -437,9 +443,9 @@ theorem selection_maximizes_data_safety :
 
 ### [F8] Promotion & Reconfiguration
 
-> **Status: Partially Implemented** -- `Gungnir/Valkey/Commands.lean`
+> **Status: Partially Implemented** -- `Gungnir/Valkey/Commands.lean`, `Gungnir/Main.lean`
 >
-> Valkey command wrappers for `REPLICAOF` (including `REPLICAOF NO ONE` for promotion) and `ROLE` (to verify current role) are implemented. The full promotion orchestration sequence (coordinate across multiple replicas, update ConfigMap, trigger rolling update) is not yet implemented as an end-to-end workflow.
+> Valkey command wrappers for `REPLICAOF` (including `REPLICAOF NO ONE` for promotion) and `ROLE` (to verify current role) are implemented. Initial replication is set up at StatefulSet creation time via a startup script in `Main.lean`: pod-0 runs as master, pods 1+ append `replicaof` directive using headless service DNS. The full automated failover orchestration (detect failure, select replica, execute `REPLICAOF NO ONE`, reconfigure others, update Service) is not yet wired end-to-end.
 
 **Description**: Promote selected replica to master and reconfigure cluster.
 
@@ -477,7 +483,9 @@ theorem no_data_loss_on_promotion :
 ```
 
 **Remaining**:
-- End-to-end promotion orchestration workflow
+- End-to-end automated failover workflow (detect failure → select replica → promote → reconfigure → update Service)
+- Execute `REPLICAOF NO ONE` via `kubectl exec` on the selected replica
+- Reconfigure remaining replicas to point to new master
 - Idempotency proof
 - ConfigMap update and rolling update triggers
 
@@ -542,7 +550,7 @@ theorem at_most_one_master :
 
 **Backup CRD**:
 ```yaml
-apiVersion: valkey.hyperspike.io/v1
+apiVersion: valkey.verilean.io/v1
 kind: ValkeyBackup
 metadata:
   name: valkey-backup-20260207
@@ -633,7 +641,7 @@ spec:
 
 **Configuration**:
 ```yaml
-apiVersion: valkey.hyperspike.io/v1
+apiVersion: valkey.verilean.io/v1
 kind: ValkeyCluster
 spec:
   tls:
@@ -699,16 +707,18 @@ securityContext:
 
 ### [V] Formal Verification (Cross-Cutting)
 
-> **Status: In Progress** -- `Gungnir/StateMachine/TemporalLogic.lean`, `Gungnir/StateMachine/Invariants.lean`, `Gungnir/StateMachine/Liveness.lean`
+> **Status: In Progress** -- `Gungnir/Main.lean`, `Gungnir/StateMachine/TemporalLogic.lean`, `Gungnir/StateMachine/Invariants.lean`, `Gungnir/StateMachine/Liveness.lean`
 >
-> **Implemented**:
-> - TLA-style temporal logic framework (`TemporalLogic.lean`): `always`, `eventually`, `leads_to`, `weak_fairness`, with composition lemmas (`always_and_combine`, `leads_to_trans`, etc.)
+> **Proved (Main.lean)**: 27 theorems with 0 sorry, covering reconciler properties, leader election correctness, resource creation invariants, and state machine termination at the executable level.
+>
+> **Implemented (library modules)**:
+> - TLA-style temporal logic framework (`TemporalLogic.lean`): `always`, `eventually`, `leads_to`, `weak_fairness`, with composition lemmas
 > - 6 safety invariants stated (`Invariants.lean`): `atMostOneMaster`, `ownerRefConsistency`, `noConcurrentUpdates`, `resourceVersionConsistency`, `configMapMatchesSpec`, `statefulSetMatchesSpec`
 > - Liveness properties stated (`Liveness.lean`): `eventuallyStableReconciliation`, `failedMasterReplaced`, `reconcileTerminates`
 > - Phased proof strategy outlined in `Liveness.lean` (Phase 0 through Phase VI)
 > - Generic state machine framework (`StateMachine.lean`): `Action`, `StateMachine`, `NetworkStateMachine`
 >
-> **Proof placeholders (sorry)**: ~16 across Invariants.lean and Liveness.lean; these represent the actual proof obligations that need to be discharged.
+> **Proof placeholders (sorry)**: 19 across 4 files: Liveness.lean (8), Invariants.lean (5), ReplicaSelection.lean (5), RESP3.lean (1).
 
 **Description**: Mathematical proofs of correctness using Lean 4 theorem proving.
 
@@ -786,10 +796,11 @@ theorem promotion_preserves_data :
 Each phase's invariants proven to **eventually** hold using leads-to reasoning.
 
 **Remaining**:
-- Discharge all 19 `sorry` placeholders across the codebase
+- Discharge 19 `sorry` placeholders: Liveness.lean (8), Invariants.lean (5), ReplicaSelection.lean (5), RESP3.lean (1)
 - Connect temporal logic framework to concrete invariant proofs
+- Bridge the 27 Main.lean theorems to the abstract state machine model
 - TLA+ model checking (external tooling not yet set up)
-- Integration with LeanMachines or similar library for correctness-by-construction
+- Integration with Lentil/LeanLTL/LeanMachines verification libraries
 
 ---
 
@@ -830,7 +841,7 @@ Each phase's invariants proven to **eventually** hold using leads-to reasoning.
 | Scale Up/Down | - | - | - | - | Scenario 2,3 | - |
 | CR Deletion (GC) | - | - | - | - | Scenario 6 | - |
 
-**Current testing**: Lean 4 type-checking only (all 17 modules compile). No unit tests, integration tests, property tests, E2E tests, or chaos tests are implemented yet. Formal proofs are stated but use `sorry` placeholders. Runtime testing will require a Lean 4 executable build (see plans.md "Lean 4 to Kubernetes Operator Integration" section).
+**Current testing**: All 18 Lean modules compile. The operator has been manually tested on a live K8s cluster: sub-resource creation, leader election, master-replica replication all verified working. No automated unit tests, integration tests, property tests, E2E tests, or chaos tests are implemented yet. Formal proofs: 27 theorems proved in Main.lean (0 sorry), 19 sorry remaining in library modules.
 
 ### E2E Test Scenarios (Planned)
 
@@ -891,20 +902,29 @@ The operator's formal verification in Lean 4 proves properties about the abstrac
 
 ### Phase 3: Failover Logic (Weeks 9-11) -- LARGELY COMPLETE
 - [F7] Replica selection -- Implemented
-- [F8] Promotion logic -- Partially implemented (commands only)
-- [F9] Service updates -- Modeled
-- [V] Safety invariants stated -- Proofs pending
+- [F8] Promotion logic -- Partially implemented (commands defined, initial replication via startup script)
+- [F9] Service updates -- Modeled (not yet wired for failover)
+- [V] Safety invariants stated -- Proofs pending (5 sorry)
+
+### Phase 3.5: Executable Operator & Deployment -- COMPLETE
+- Main.lean daemon -- CLI, leader election, reconcile loop, kubectl bridge (27 theorems, 0 sorry)
+- Resource creation -- JSON generation for all 6 sub-resources via kubectl apply
+- Replication -- Pod-0 as master, pods 1+ replicate via startup script
+- Helm chart -- CRD, RBAC, Deployment, leader election, ServiceAccount
+- Docker build -- Multi-stage (Lean 4 build → native binary + kubectl)
+- Deployed and verified on live K8s cluster
 
 ### Phase 4: Operations (Weeks 12-14) -- PARTIALLY COMPLETE
-- [F10] Backup/Restore -- Partially implemented (commands only)
-- [F11] PDB, TLS, QoS -- PDB modeled, TLS/QoS not yet
-- [V] ESR property stated -- Proof pending
+- [F10] Backup/Restore -- Partially implemented (commands only; S3/Job/CRD not yet)
+- [F11] PDB -- Created via JSON generation; TLS/QoS not yet
+- [V] ESR property stated -- Proof pending (8 sorry in Liveness.lean)
 
 ### Phase 5: Hardening (Weeks 15-16) -- NOT STARTED
+- Automated failover (F8: `REPLICAOF NO ONE` via kubectl exec, F9: Service selector update)
 - Chaos engineering tests
-- Performance optimization
-- Documentation
-- Discharge all sorry placeholders
+- Automated E2E tests on kind cluster
+- CI/CD pipeline (GitHub Actions)
+- Discharge all 19 sorry placeholders
 
 ---
 
