@@ -1,0 +1,16 @@
+apiVersion: valkey.verilean.io/v1
+kind: ValkeyCluster
+metadata:
+  name: test-valkey
+  namespace: default
+spec:
+  replicas: 3
+  image: valkey/valkey:7.2
+  port: 6379
+  persistence:
+    enabled: true
+    storageSize: 1Gi
+  sentinel:
+    pingIntervalMs: 1000
+    downAfterMs: 5000
+    failoverTimeoutMs: 60000

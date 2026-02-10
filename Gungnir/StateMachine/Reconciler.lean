@@ -150,28 +150,46 @@ def reconcileCore
         ({ state with reconcileStep := ValkeyReconcileStep.Error "update failed" }, none)
 
   | ValkeyReconcileStep.AfterCheckValkeyHealth =>
-    -- Health check complete; proceed to status update
-    let state' := { state with reconcileStep := ValkeyReconcileStep.AfterUpdateStatus }
-    (state', some (RequestView.KRequest (makeStatusReq crName ns)))
+    -- Check nodeHealthMap for SDOWN threshold. If master failed → failover path.
+    -- The executor populates nodeHealthMap and failedMaster before feeding back.
+    match state.failedMaster with
+    | some _ =>
+      -- Master SDOWN detected; enter failover path
+      let state' := { state with
+        reconcileStep := ValkeyReconcileStep.AfterDetectFailure
+        failoverInProgress := true }
+      (state', none)
+    | none =>
+      -- All healthy; proceed to status update
+      let state' := { state with reconcileStep := ValkeyReconcileStep.AfterUpdateStatus }
+      (state', some (RequestView.KRequest (makeStatusReq crName ns)))
 
   | ValkeyReconcileStep.AfterDetectFailure =>
-    -- Failure detected; proceed to replica selection
+    -- Failure detected; proceed to replica selection (selection done in executor)
     let state' := { state with reconcileStep := ValkeyReconcileStep.AfterSelectReplica }
     (state', none)
 
   | ValkeyReconcileStep.AfterSelectReplica =>
-    -- Replica selected; proceed to promotion
-    let state' := { state with reconcileStep := ValkeyReconcileStep.AfterPromoteReplica }
-    (state', none)
+    -- Check if a replica was selected by the executor
+    match state.selectedReplica with
+    | some _ =>
+      -- Replica selected; proceed to promotion (promotion done in executor)
+      let state' := { state with reconcileStep := ValkeyReconcileStep.AfterPromoteReplica }
+      (state', none)
+    | none =>
+      -- No eligible replica found; error
+      ({ state with reconcileStep := ValkeyReconcileStep.Error "no eligible replica for failover" }, none)
 
   | ValkeyReconcileStep.AfterPromoteReplica =>
-    -- Promotion done; update service to point to new master
+    -- Promotion done (by executor); update service to point to new master
     let state' := { state with reconcileStep := ValkeyReconcileStep.AfterUpdateService }
     (state', none)
 
   | ValkeyReconcileStep.AfterUpdateService =>
-    -- Service updated; proceed to status update
-    let state' := { state with reconcileStep := ValkeyReconcileStep.AfterUpdateStatus }
+    -- Service updated (by executor); proceed to status update
+    let state' := { state with
+      reconcileStep := ValkeyReconcileStep.AfterUpdateStatus
+      failoverInProgress := false }
     (state', some (RequestView.KRequest (makeStatusReq crName ns)))
 
   | ValkeyReconcileStep.AfterUpdateStatus =>

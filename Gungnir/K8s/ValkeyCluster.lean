@@ -223,6 +223,14 @@ structure ValkeyReconcileState where
   latestConfigMapRv : Option String := none
   /-- The current master pod name discovered during reconciliation. -/
   discoveredMaster : Option String := none
+  /-- Pod name → consecutive PING failure count for health tracking. -/
+  nodeHealthMap : List (String × Nat) := []
+  /-- Pod name of the master that has been detected as failed (SDOWN). -/
+  failedMaster : Option String := none
+  /-- Pod name of the replica selected for promotion. -/
+  selectedReplica : Option String := none
+  /-- Whether a failover is currently in progress. -/
+  failoverInProgress : Bool := false
   deriving Repr
 
 /-! ## Reconciler Interface -/

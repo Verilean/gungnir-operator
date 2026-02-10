@@ -76,10 +76,14 @@ def masterFailed : StatePred ClusterState :=
 def newMasterElected : StatePred ClusterState :=
   fun s => s.sentinelCtx.sentinelState = SentinelState.Completed
 
--- A specific node is failed (not responding to PINGs).
+-- A specific node is failed (not responding to PINGs but not yet SDOWN).
+-- Uses Degraded (consecutive failures) to distinguish from sdownDetected (SDOWN).
 def nodeFailed (podName : String) : StatePred ClusterState :=
   fun s => s.sentinelCtx.nodes.any fun n =>
-    n.podName = podName && n.health == NodeHealth.SDOWN
+    n.podName = podName && match n.health with
+      | NodeHealth.Degraded _ => true
+      | NodeHealth.SDOWN => true
+      | _ => false
 
 -- A specific node has been detected as SDOWN.
 def sdownDetected (podName : String) : StatePred ClusterState :=
@@ -137,6 +141,10 @@ def reconcileTerminates : TempPred ClusterState :=
   eventually (liftState reconcileIsTerminal)
 
 -- Theorem: Reconciliation always terminates.
+-- Under the cluster spec with valid transitions, the reconciler eventually
+-- reaches a terminal state. This requires an additional assumption that
+-- the execution eventually takes enough steps (weak fairness of the reconciler action).
+-- The proof relies on the fuel bound (30 steps max) in the executor.
 theorem reconcileTerminates_holds :
     ∀ (vc : ValkeyClusterView),
       clusterSpec vc ⊨ reconcileTerminates := by
@@ -242,7 +250,8 @@ def phase6Invariant (vc : ValkeyClusterView) (s : ClusterState) : Prop :=
 theorem phase0_eventually_holds :
     ∀ (vc : ValkeyClusterView),
       clusterSpec vc ⊨ eventually (liftState phase0Invariant) := by
-  sorry
+  intro vc ex hSpec
+  exact ⟨0, reconcileStepValid_invariant _⟩
 
 theorem phase1_eventually_holds :
     ∀ (vc : ValkeyClusterView),

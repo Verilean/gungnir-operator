@@ -112,14 +112,48 @@ def isBetterOrEqual (a b : ReplicaInfo) : Prop :=
   (a.priority = b.priority ∧ a.replOffset > b.replOffset) ∨
   (a.priority = b.priority ∧ a.replOffset = b.replOffset ∧ a.runId ≤ b.runId)
 
-/-- The selection function is total: it either returns a valid replica
-    from the input list or none (when no eligible replicas exist). -/
+/-- Helper: select_best_replica returns none iff filterEligible is empty. -/
+private theorem select_best_none_iff (replicas : List ReplicaInfo) (config : SelectionConfig) :
+    select_best_replica replicas config = none →
+    (filterEligible config replicas).isEmpty = true := by
+  intro hNone
+  simp only [select_best_replica, sortReplicas] at hNone
+  cases hSorted : (filterEligible config replicas).mergeSort replicaLessThan with
+  | nil =>
+    have hPerm := List.mergeSort_perm (filterEligible config replicas) replicaLessThan
+    rw [hSorted] at hPerm
+    have hLen := hPerm.length_eq
+    simp at hLen
+    cases hFilt : filterEligible config replicas with
+    | nil => rfl
+    | cons _ _ => rw [hFilt] at hLen; simp at hLen
+  | cons _ _ => rw [hSorted] at hNone; simp at hNone
+
+/-- Helper: select_best_replica returns some r implies r ∈ filterEligible. -/
+private theorem select_best_some_mem (replicas : List ReplicaInfo) (config : SelectionConfig)
+    (r : ReplicaInfo) :
+    select_best_replica replicas config = some r →
+    r ∈ filterEligible config replicas := by
+  intro hSome
+  simp only [select_best_replica, sortReplicas] at hSome
+  cases hSorted : (filterEligible config replicas).mergeSort replicaLessThan with
+  | nil => rw [hSorted] at hSome; simp at hSome
+  | cons best rest =>
+    rw [hSorted] at hSome; simp at hSome
+    have hPerm := List.mergeSort_perm (filterEligible config replicas) replicaLessThan
+    rw [hSorted] at hPerm
+    rw [← hSome]
+    exact hPerm.subset (List.Mem.head rest)
+
 theorem select_best_replica_total :
     ∀ (replicas : List ReplicaInfo) (config : SelectionConfig),
       match select_best_replica replicas config with
       | none => (filterEligible config replicas).isEmpty = true
       | some r => r ∈ filterEligible config replicas := by
-  sorry
+  intro replicas config
+  cases h : select_best_replica replicas config with
+  | none => exact select_best_none_iff replicas config h
+  | some r => exact select_best_some_mem replicas config r h
 
 /-- The selection function is deterministic: same input always produces same output. -/
 theorem select_best_replica_deterministic :
@@ -129,7 +163,10 @@ theorem select_best_replica_deterministic :
   rfl
 
 /-- The selected replica has the highest priority (lowest priority number)
-    among all eligible replicas. -/
+    among all eligible replicas.
+    Proof strategy: mergeSort with replicaLessThan places the lowest priority first.
+    The head of the sorted list has priority ≤ all other elements.
+    Requires: replicaLessThan is transitive and total (for sorted_mergeSort). -/
 theorem selected_has_best_priority :
     ∀ (replicas : List ReplicaInfo) (config : SelectionConfig) (selected : ReplicaInfo),
       select_best_replica replicas config = some selected →
@@ -144,7 +181,9 @@ theorem selected_has_best_priority :
     (b) has a strictly better (lower) priority than any replica with a higher offset.
 
     This ensures that promotion never loses committed data unless explicitly
-    overridden by the administrator via priority settings. -/
+    overridden by the administrator via priority settings.
+    Proof follows from the sorting order of replicaLessThan:
+    within the same priority, higher offset comes first. -/
 theorem selection_maximizes_data_safety :
     ∀ (replicas : List ReplicaInfo) (config : SelectionConfig) (selected : ReplicaInfo),
       select_best_replica replicas config = some selected →
@@ -159,14 +198,25 @@ theorem priority_zero_never_selected :
     ∀ (replicas : List ReplicaInfo) (config : SelectionConfig) (selected : ReplicaInfo),
       select_best_replica replicas config = some selected →
       selected.priority ≠ 0 := by
-  sorry
+  intro replicas config selected hSel
+  have hTotal := select_best_replica_total replicas config
+  rw [hSel] at hTotal
+  simp only [filterEligible] at hTotal
+  have hFilt := (List.mem_filter).mp hTotal
+  obtain ⟨_, hElig⟩ := hFilt
+  simp only [isEligible, Bool.and_eq_true] at hElig
+  obtain ⟨⟨_, hPri⟩, _⟩ := hElig
+  simp only [bne_iff_ne] at hPri
+  exact hPri
 
 /-- If a single eligible replica exists, it is always selected. -/
 theorem single_eligible_selected :
     ∀ (replicas : List ReplicaInfo) (config : SelectionConfig) (r : ReplicaInfo),
       filterEligible config replicas = [r] →
       select_best_replica replicas config = some r := by
-  sorry
+  intro replicas config r hElig
+  simp only [select_best_replica, hElig, sortReplicas]
+  simp [List.mergeSort]
 
 /-! ## Convert Selection Result to Sentinel NodeInfo -/
 

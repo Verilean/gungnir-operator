@@ -1,0 +1,43 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install elan
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Cache .lake
+        uses: actions/cache@v4
+        with:
+          path: .lake
+          key: lake-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lakefile.lean') }}
+          restore-keys: |
+            lake-${{ runner.os }}-
+
+      - name: Build library
+        run: lake build
+
+      - name: Build executable
+        run: lake build gungnir_operator
+
+      - name: Docker build
+        run: docker build -t gungnir-operator:ci .
+
+      - name: Report sorry count
+        run: |
+          echo "## Sorry Count" >> "$GITHUB_STEP_SUMMARY"
+          SORRY_COUNT=$(grep -r "sorry" Gungnir/ | wc -l)
+          echo "Found **${SORRY_COUNT}** sorry occurrences in Gungnir/" >> "$GITHUB_STEP_SUMMARY"
+          echo "sorry count: ${SORRY_COUNT}"
