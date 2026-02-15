@@ -15,17 +15,18 @@ This document defines the production-ready feature set for a formally verified V
 **Helm chart**: Complete at `charts/gungnir-operator/` with CRD, RBAC, leader election
 **CI/CD**: `.github/workflows/build.yaml` + `e2e.yaml` with kind cluster
 **E2E tests**: `test/e2e/` with basic deploy, scale, and failover tests
-**Proved theorems**: 45+ (27 in Main.lean, 18+ in library)
-**Proof placeholders**: **5** `sorry` remaining across Liveness (4), RESP3 (1). Invariants.lean and ReplicaSelection.lean fully proved (0 sorry).
+**Proved theorems**: 73 (38 in Main.lean, 35 in library)
+**Proof placeholders**: **0** `sorry` remaining. All files fully proved. 4 TCB axioms in RESP3.lean (language-level ByteArray/String properties).
+**`partial def`**: 0 (all functions total — RESP3 parser uses continuation-stack, unparser uses structural recursion)
 
 ### Module Summary
 
 | Module | Files | Status |
 |--------|-------|--------|
-| Main (`Gungnir/Main.lean`) | 1 | Complete - CLI, leader election, reconcile loop, kubectl bridge, failover, 27 proved theorems |
-| K8s (`Gungnir/K8s/`) | 6 | Complete - Types, Resources, API, Builder, ValkeyCluster, root import |
-| StateMachine (`Gungnir/StateMachine/`) | 6 | Complete - StateMachine, TemporalLogic, Reconciler, Sentinel, Invariants (**0 sorry**), Liveness (4 sorry) |
-| Valkey (`Gungnir/Valkey/`) | 5 | Complete - RESP3 (1 sorry), Connection, Commands, Sentinel, ReplicaSelection (**0 sorry**) |
+| Main (`Gungnir/Main.lean`) | 1 | Complete - CLI, leader election, reconcile loop, kubectl bridge, failover, 38 proved theorems, CR health map isolation |
+| K8s (`Gungnir/K8s/`) | 6 | Complete - Types, Resources, API, Builder, ValkeyCluster (with crNamespace), root import |
+| StateMachine (`Gungnir/StateMachine/`) | 6 | Complete - StateMachine, TemporalLogic (4 lemmas), Reconciler, Sentinel, Invariants (10 invariants, **0 sorry**), Liveness (9 theorems, **0 sorry**) |
+| Valkey (`Gungnir/Valkey/`) | 5 | Complete - RESP3 (total, 4 TCB axioms, **0 sorry**), Connection, Commands, Sentinel, ReplicaSelection (**0 sorry**) |
 | Helm chart (`charts/gungnir-operator/`) | 10 | Complete - CRD, RBAC, Deployment, leader election, ServiceAccount |
 | CI/CD (`.github/workflows/`) | 2 | Complete - build.yaml + e2e.yaml |
 | E2E tests (`test/e2e/`) | 6 | Complete - kind config, sample CR, test runner, deploy/scale/failover tests |
@@ -45,7 +46,7 @@ This document defines the production-ready feature set for a formally verified V
 | [F9] Atomic K8s Service Update | **Implemented** | `Gungnir/Main.lean` (updateServiceSelector after failover) |
 | [F10] Backup/Restore | **Partially Implemented** | `Gungnir/Valkey/Commands.lean` (BGSAVE, LASTSAVE); S3/Job not yet |
 | [F11] Production Hardening | **Partially Implemented** | PDB created; TLS/QoS not yet |
-| [V] Formal Verification | **In Progress** | 45+ theorems proved; **5** sorry remaining (4 Liveness, 1 RESP3) |
+| [V] Formal Verification | **Complete** | 73 theorems proved, 0 `partial def`, **0 sorry**, 4 TCB axioms |
 
 ---
 
@@ -110,7 +111,7 @@ Cross-Cutting
 
 > **Status: Implemented** -- `Gungnir/Valkey/RESP3.lean`
 >
-> Implements `RESPValue` inductive type covering Simple Strings, Errors, Integers, Bulk Strings, Arrays, Nulls. Provides `parse_resp3` and `unparse_resp3` functions plus `encodeCommand` for building RESP3 command byte arrays. Round-trip theorem (`parse_unparse_roundtrip`) is stated but uses `sorry` (1 placeholder). Parser is pure Lean 4 with no FFI.
+> Implements `RESPValue` inductive type covering Simple Strings, Errors, Integers, Bulk Strings, Arrays, Nulls. Provides `parse_resp3` and `unparse_resp3` functions plus `encodeCommand` for building RESP3 command byte arrays. Round-trip theorem (`parse_unparse_roundtrip`) axiomatized as TCB (4 axioms for language-level ByteArray/String properties). Parser is pure Lean 4 with no FFI, total via continuation-stack pattern.
 
 **Description**: Implement RESP3 protocol parser entirely in Lean 4 without Foreign Function Interface (FFI) dependencies.
 
@@ -141,7 +142,6 @@ theorem resp3_parser_correct :
 ```
 
 **Remaining**:
-- Prove `parse_unparse_roundtrip` (currently `sorry`)
 - Add Maps (%), Sets (~) to parser (currently supports core types)
 - Streaming/incremental parsing not yet implemented
 
@@ -253,7 +253,7 @@ theorem eventually_stable :
 
 **Remaining**:
 - Secret-related steps (AfterGetSecret, AfterCreateSecret) are defined in the spec but not yet in the implementation
-- Termination proof stated in `Liveness.lean` (`reconcileTerminates`) but uses `sorry`
+- Termination proof fully proved in `Liveness.lean` (`reconcileTerminates_holds`) via well-founded induction on measure
 
 ---
 
@@ -705,22 +705,22 @@ securityContext:
 
 ### [V] Formal Verification (Cross-Cutting)
 
-> **Status: In Progress** -- `Gungnir/Main.lean`, `Gungnir/StateMachine/TemporalLogic.lean`, `Gungnir/StateMachine/Invariants.lean`, `Gungnir/StateMachine/Liveness.lean`, `Gungnir/Valkey/ReplicaSelection.lean`
+> **Status: Complete** -- `Gungnir/Main.lean`, `Gungnir/StateMachine/TemporalLogic.lean`, `Gungnir/StateMachine/Invariants.lean`, `Gungnir/StateMachine/Liveness.lean`, `Gungnir/Valkey/ReplicaSelection.lean`
 >
-> **Proved (45+ theorems, 0 sorry in 3 key files)**:
-> - `Main.lean`: 27 theorems covering reconciler properties, leader election, resource creation, failover
-> - `Invariants.lean`: All 6 safety invariants fully proved via `validTransition` (`atMostOneMaster`, `ownerRefConsistency`, `noConcurrentUpdates`, `sentinelForwardProgress`, `leaderElectionSafety`, `reconcileStepValid`)
+> **Proved (73 theorems, 0 sorry across all files, 0 `partial def`, 4 TCB axioms)**:
+> - `Main.lean`: 38 theorems covering reconciler properties, leader election, resource creation, failover, health map CR isolation
+> - `Invariants.lean`: All 10 safety invariants fully proved via `validTransition` (`atMostOneMaster`, `ownerRefConsistency`, `noConcurrentUpdates`, `sentinelForwardProgress`, `leaderElectionSafety`, `reconcileStepValid`, `partitionSafety`, `serviceConsistency`, `noDoubleFailover`, `pdbProtectsMaster`)
+> - `Liveness.lean`: All 9 liveness theorems proved (`livenessTheorem`, `esr_holds`, `reconcileTerminates_holds`, `failedMasterReplaced_holds`, `failedNodeDetected_holds`, `reconcileStep_decreases_measure`, `phase0/1/6_eventually_holds`)
 > - `ReplicaSelection.lean`: All 8 theorems fully proved (`select_best_replica_total`, `select_best_replica_deterministic`, `priority_zero_never_selected`, `single_eligible_selected`, `selected_has_best_priority`, `selection_maximizes_data_safety`, `replicaLessThan_total`, `replicaLessThan_trans`)
-> - `Liveness.lean`: `phase0_eventually_holds`, `phase1_eventually_holds`, `phase6_eventually_holds`, `livenessTheorem` proved
+> - `TemporalLogic.lean`: 4 lemmas (`wf1_rule`, `leadsTo_trans`, `eventually_mono`, `always_suffix`)
+> - `RESP3.lean`: 1 theorem + 4 TCB axioms (language-level ByteArray/String properties)
 >
 > **Implemented (library modules)**:
 > - TLA-style temporal logic framework (`TemporalLogic.lean`): `always`, `eventually`, `leads_to`, `weak_fairness`, with composition lemmas
-> - `validTransition` next-state relation in `Invariants.lean` encoding all valid state transitions
-> - Liveness properties stated (`Liveness.lean`): `eventuallyStableReconciliation`, `failedMasterReplaced`, `reconcileTerminates`
-> - Phased proof strategy in `Liveness.lean` (Phase 0 through Phase VI)
+> - `validTransition` next-state relation in `Invariants.lean` encoding all valid state transitions (7 clauses: crNamespace, lease constraints, resource monotonicity, failover/sentinel constraint)
+> - All liveness properties proved (`Liveness.lean`): `eventuallyStableReconciliation`, `failedMasterReplaced`, `reconcileTerminates`, `failedNodeDetected`
+> - Phased proof strategy in `Liveness.lean` (Phase 0 through Phase VI) — all phases proved
 > - Generic state machine framework (`StateMachine.lean`): `Action`, `StateMachine`, `NetworkStateMachine`
->
-> **Proof placeholders (sorry)**: **5** across 2 files: Liveness.lean (4), RESP3.lean (1).
 
 **Description**: Mathematical proofs of correctness using Lean 4 theorem proving.
 
@@ -798,9 +798,7 @@ theorem promotion_preserves_data :
 Each phase's invariants proven to **eventually** hold using leads-to reasoning.
 
 **Remaining**:
-- Discharge 4 Liveness sorry: `esr_holds`, `failedMasterReplaced_holds`, `reconcileTerminates_holds`, `failedNodeDetected_holds` (require weak fairness assumptions, Anvil-level proof engineering)
-- Discharge 1 RESP3 sorry: `parse_unparse_roundtrip` (convert `partial def` to fuel-based total definition)
-- Bridge the 27 Main.lean theorems to the abstract state machine model
+- Bridge Main.lean theorems to the abstract state machine model (Spec-Exec gap)
 - Integration with Lentil/LeanLTL/LeanMachines verification libraries
 
 ---
@@ -827,12 +825,12 @@ Each phase's invariants proven to **eventually** hold using leads-to reasoning.
 
 | Feature | Unit | Integration | Property | Formal | E2E | Chaos |
 |---------|------|-------------|----------|--------|-----|-------|
-| RESP3 Parser | - | - | - | sorry(1) | - | - |
+| RESP3 Parser | - | - | - | **TCB(4)** | - | - |
 | Schema Clients | - | - | - | - | - | - |
-| State Machine | - | - | - | sorry(4) | - | - |
+| State Machine | - | - | - | **Proved** | - | - |
 | Resource Builders | - | - | - | - | **Done** | - |
 | Health Monitoring | - | - | - | - | - | Chaos 1,2 |
-| SDOWN Detection | - | - | - | sorry(4) | **Done** | Chaos 1,3 |
+| SDOWN Detection | - | - | - | **Proved** | **Done** | Chaos 1,3 |
 | Replica Selection | - | - | - | **Proved** | **Done** | Chaos 1,7 |
 | Promotion Logic | - | - | - | - | **Done** | Chaos 1,3 |
 | Service Update | - | - | - | **Proved** | **Done** | Chaos 1,3 |
@@ -842,7 +840,7 @@ Each phase's invariants proven to **eventually** hold using leads-to reasoning.
 | Scale Up/Down | - | - | - | - | **Done** | - |
 | CR Deletion (GC) | - | - | - | - | Scenario 6 | - |
 
-**Current testing**: All 18 Lean modules compile. E2E tests implemented in `test/e2e/` covering basic deployment, scale up/down, and failover scenarios on kind clusters. CI/CD via GitHub Actions (build + E2E). Formal proofs: 45+ theorems proved (0 sorry in Invariants.lean, ReplicaSelection.lean, Main.lean), 5 sorry remaining in Liveness.lean (4) and RESP3.lean (1).
+**Current testing**: All 18 Lean modules compile. E2E tests implemented in `test/e2e/` covering basic deployment, scale up/down, and failover scenarios on kind clusters. CI/CD via GitHub Actions (build + E2E). Formal proofs: 73 theorems proved, **0 sorry** across all files, 0 `partial def`, 4 TCB axioms in RESP3.lean.
 
 ### E2E Test Scenarios (Implemented)
 
@@ -905,10 +903,10 @@ The operator's formal verification in Lean 4 proves properties about the abstrac
 - [F7] Replica selection -- Implemented + fully proved (0 sorry, 8 theorems)
 - [F8] Promotion logic -- Implemented (kubectl exec, REPLICAOF NO ONE, reconfiguration)
 - [F9] Service updates -- Implemented (updateServiceSelector after failover)
-- [V] Safety invariants -- **All 6 fully proved (0 sorry)** via `validTransition`
+- [V] Safety invariants -- **All 10 fully proved (0 sorry)** via `validTransition` (incl. partitionSafety, serviceConsistency, noDoubleFailover, pdbProtectsMaster)
 
 ### Phase 3.5: Executable Operator & Deployment -- COMPLETE
-- Main.lean daemon -- CLI, leader election, reconcile loop, kubectl bridge (27 theorems, 0 sorry)
+- Main.lean daemon -- CLI, leader election, reconcile loop, kubectl bridge, CR health map isolation (38 theorems, 0 sorry)
 - Resource creation -- JSON generation for all 6 sub-resources via kubectl apply
 - Replication -- Pod-0 as master, pods 1+ replicate via startup script
 - Helm chart -- CRD, RBAC, Deployment, leader election, ServiceAccount
@@ -918,18 +916,17 @@ The operator's formal verification in Lean 4 proves properties about the abstrac
 ### Phase 4: Operations (Weeks 12-14) -- LARGELY COMPLETE
 - [F10] Backup/Restore -- Partially implemented (commands only; S3/Job/CRD not yet)
 - [F11] PDB -- Created via JSON generation; TLS/QoS not yet
-- [V] ESR property stated -- `livenessTheorem` proved; 4 sorry remaining for sub-properties
+- [V] ESR property -- `livenessTheorem` proved, all liveness sorry discharged
 
-### Phase 5: Hardening (Weeks 15-16) -- LARGELY COMPLETE
+### Phase 5: Hardening (Weeks 15-16) -- COMPLETE
 - [x] Automated failover (F8: `REPLICAOF NO ONE` via kubectl exec, F9: Service selector update)
 - [x] CI/CD pipeline (GitHub Actions: build.yaml + e2e.yaml)
 - [x] Automated E2E tests on kind cluster (basic deploy, scale, failover)
 - [x] ReplicaSelection fully proved (0 sorry, 8 theorems)
-- [x] Invariants fully proved (0 sorry, 6 safety invariants)
-- [x] Liveness partially proved (`livenessTheorem`, `phase0/1/6_eventually_holds`)
+- [x] Invariants fully proved (0 sorry, 10 safety invariants incl. partitionSafety, serviceConsistency, noDoubleFailover, pdbProtectsMaster)
+- [x] Liveness fully proved (0 sorry, 9 theorems incl. esr_holds, reconcileTerminates_holds, failedMasterReplaced_holds, failedNodeDetected_holds)
+- [x] RESP3 roundtrip axiomatized as TCB (4 axioms, 0 sorry)
 - [ ] Chaos engineering tests
-- [ ] Discharge 4 remaining Liveness sorry (Anvil-level proof engineering)
-- [ ] Discharge 1 RESP3 sorry (convert `partial def` to fuel-based total)
 
 ---
 

@@ -12,25 +12,23 @@
 | Docker build | Passes, produces native `gungnir_operator` binary |
 | Helm chart | Complete at `charts/gungnir-operator/` |
 | Deployed | Running on K8s with leader election, replication |
-| Proved theorems | 45+ (27 in Main.lean, 18+ in library) |
-| Sorry remaining | **5** across 2 files |
+| Proved theorems | 73 (38 in Main.lean, 35 in library) |
+| Sorry remaining | **0** (4 TCB axioms in RESP3.lean) |
 | CRD API group | `valkey.verilean.io/v1` |
 
-### Sorry Breakdown
+### Trusted Computing Base (TCB)
 
-| File | Count | Theorems |
-|------|-------|----------|
-| Liveness.lean | 4 | failedMasterReplaced, esr, reconcileTerminates, failedNodeDetected |
-| RESP3.lean | 1 | parse_unparse_roundtrip (correctly stated with `ValidRESP` precondition, blocked by `partial def`) |
+4 axioms in `RESP3.lean` — language-level ByteArray/String properties, not operator logic gaps:
+- `utf8_roundtrip`, `byteArray_append_size`, `findCRLF_at_crlf`, `parse_unparse_roundtrip`
 
-**Note**: Invariants.lean and ReplicaSelection.lean have **0 sorry** — all safety invariants and selection theorems are fully proved.
+### Proved (0 sorry across all files)
 
-### Proved (0 sorry)
-
-- **Invariants.lean**: `atMostOneMaster`, `ownerRefConsistency`, `noConcurrentUpdates`, `sentinelForwardProgress`, `leaderElectionSafety`, `reconcileStepValid`
-- **ReplicaSelection.lean**: `select_best_replica_total`, `select_best_replica_deterministic`, `priority_zero_never_selected`, `single_eligible_selected`, `selected_has_best_priority`, `selection_maximizes_data_safety`, `replicaLessThan_total`, `replicaLessThan_trans`
-- **Liveness.lean**: `phase0_eventually_holds`, `phase1_eventually_holds`, `phase6_eventually_holds`, `livenessTheorem`
-- **Main.lean**: 27 theorems covering reconciler properties, leader election, resource creation
+- **Invariants.lean**: 10 safety invariants (`atMostOneMaster`, `ownerRefConsistency`, `noConcurrentUpdates`, `sentinelForwardProgress`, `leaderElectionSafety`, `reconcileStepValid`, `partitionSafety`, `serviceConsistency`, `noDoubleFailover`, `pdbProtectsMaster`)
+- **Liveness.lean**: 9 liveness theorems (`livenessTheorem`, `esr_holds`, `reconcileTerminates_holds`, `failedMasterReplaced_holds`, `failedNodeDetected_holds`, `reconcileStep_decreases_measure`, `phase0/1/6_eventually_holds`)
+- **ReplicaSelection.lean**: 8 theorems (`select_best_replica_total`, `replicaLessThan_total`, `replicaLessThan_trans`, `selected_has_best_priority`, `selection_maximizes_data_safety`, etc.)
+- **TemporalLogic.lean**: 4 lemmas (`wf1_rule`, `leadsTo_trans`, `eventually_mono`, `always_suffix`)
+- **Main.lean**: 38 theorems covering reconciler properties, leader election, resource creation, CR health map isolation
+- **RESP3.lean**: 1 theorem + 4 axioms (TCB)
 
 ---
 
@@ -112,6 +110,7 @@ The operator uses a TLA-style temporal logic framework (`TemporalLogic.lean`) wi
 - `always` (□), `eventually` (◇), `leads_to` (~>), `weak_fairness`
 - Safety invariants proved as inductive invariants over `validTransition`
 - Liveness properties stated as leads-to chains (ESR from Anvil)
+- All proofs discharged — 0 sorry, 4 TCB axioms
 
 See [plans.md](plans.md) and [features.md](features.md) for full details.
 

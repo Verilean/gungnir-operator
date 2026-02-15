@@ -231,6 +231,8 @@ structure ValkeyReconcileState where
   selectedReplica : Option String := none
   /-- Whether a failover is currently in progress. -/
   failoverInProgress : Bool := false
+  /-- Namespace of the CR being reconciled (for CR isolation). -/
+  crNamespace : String := ""
   deriving Repr
 
 /-! ## Reconciler Interface -/

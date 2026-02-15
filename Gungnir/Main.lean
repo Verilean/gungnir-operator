@@ -576,19 +576,28 @@ def performFailover (config : OperatorConfig) (crName ns : String)
       logMsg config 0 "failover" crName ("REPLICAOF NO ONE failed: " ++ e)
       return none
     | Except.ok _ => pure ()
-    -- Step 2: Reconfigure other replicas to follow the new master
+    -- Step 2: Reconfigure replicas (track failures)
     let newMasterHost := newMasterPod ++ "." ++ crName ++ "-headless." ++ ns ++ ".svc.cluster.local"
+    let mut reconfFailures : Nat := 0
     for (podName, _, port) in pods do
       if podName != newMasterPod then
-        let _ ← kubectlExecValkeyCli podName ns ["REPLICAOF", newMasterHost, toString port]
-    -- Step 3: Update the client Service selector
+        let r ← kubectlExecValkeyCli podName ns ["REPLICAOF", newMasterHost, toString port]
+        match r with
+        | Except.error e =>
+          logMsg config 0 "failover" crName ("REPLICAOF on " ++ podName ++ " failed: " ++ e)
+          reconfFailures := reconfFailures + 1
+        | Except.ok _ => pure ()
+    if reconfFailures > 0 then
+      logMsg config 0 "failover" crName (toString reconfFailures ++ " replica reconfigurations failed")
+    -- Step 3: Service update (MUST succeed — failure returns none to prevent split-brain)
     let svcResult ← updateServiceSelector crName ns newMasterPod
     match svcResult with
     | Except.error e =>
-      logMsg config 0 "failover" crName ("service update failed: " ++ e)
+      logMsg config 0 "failover" crName ("CRITICAL: service update failed: " ++ e)
+      return none
     | Except.ok () =>
       logMsg config 1 "failover" crName ("service updated to " ++ newMasterPod)
-    return some newMasterPod
+      return some newMasterPod
 
 /-- Helper: check if a pod name is the master pod (ordinal 0). -/
 def isMasterPod (podName crName : String) : Bool :=
@@ -619,6 +628,10 @@ def reconcileOne (config : OperatorConfig) (crName ns : String)
     -- Walk through the reconciler state machine
     let mut state : ValkeyReconcileState := { reconcileInitState with nodeHealthMap := crHealthMap }
     let mut resp : DefaultResp := none
+    -- Fuel bound: worst-case path is 12 (resources) + 1 (health) + 6 (failover)
+    -- + 1 (status) + 1 (terminal) = 21 steps. 30 provides 43% headroom.
+    -- Fuel exhaustion → safe degradation (next interval restarts from Init).
+    -- NOT covered: K8s API retries, concurrent update conflicts.
     let mut fuel := 30  -- max transitions per reconcile (increased for failover path)
     while fuel > 0 && !reconcileDone state && !reconcileError state do
       -- Intercept failover-related states for executor-side logic
@@ -703,6 +716,10 @@ def reconcileLoop (config : OperatorConfig) : IO Unit := do
     | Except.ok clusters =>
       for (name, ns) in clusters do
         reconcileOne config name ns healthMaps
+      -- CR deletion cleanup: remove health map entries for CRs no longer active
+      let activeCRs := clusters.map (·.1)
+      let maps ← healthMaps.get
+      healthMaps.set (maps.filter fun p => activeCRs.contains p.1)
     IO.sleep config.reconcileIntervalMs.toUInt32
     running := true  -- In production, check shutdown signal
 
@@ -987,6 +1004,34 @@ theorem health_check_failure_goes_to_detect (vc : ValkeyClusterView) (resp : Def
   intro hStep hFail
   simp [reconcileCore, hStep, hFail]
 
+/-! ### Health Map CR Isolation -/
+
+/-- Health map filter preserves entries for a given CR when that CR is in the active list.
+    This guarantees CR-level isolation: operations on CR X's health data don't lose CR Y's data
+    as long as CR Y is still active. -/
+theorem healthMap_cr_isolation (maps : List (String × List (String × Nat)))
+    (activeCRs : List String) (crName : String)
+    (hActive : crName ∈ activeCRs) :
+    ∀ entry, entry ∈ maps → entry.1 = crName →
+      entry ∈ maps.filter (fun p => activeCRs.contains p.1) := by
+  intro entry hMem hEq
+  rw [List.mem_filter]
+  refine ⟨hMem, ?_⟩
+  rw [hEq]
+  exact List.elem_eq_true_of_mem hActive
+
+/-- Health map cleanup removes exactly the entries for inactive CRs. -/
+theorem healthMap_cleanup_removes_inactive (maps : List (String × List (String × Nat)))
+    (activeCRs : List String) (crName : String)
+    (hInactive : crName ∉ activeCRs) :
+    ∀ entry, entry ∈ maps.filter (fun p => activeCRs.contains p.1) →
+      entry.1 ≠ crName := by
+  intro entry hMem hEq
+  rw [List.mem_filter] at hMem
+  have hContains := hMem.2
+  rw [hEq] at hContains
+  exact hInactive (List.mem_of_elem_eq_true hContains)
+
 /-- AfterSelectReplica with no selectedReplica goes to Error. -/
 theorem select_no_replica_goes_to_error (vc : ValkeyClusterView) (resp : DefaultResp)
     (state : ValkeyReconcileState) :
@@ -1035,6 +1080,10 @@ def main (args : List String) : IO Unit := do
       | Except.ok clusters =>
         for (name, ns) in clusters do
           Gungnir.reconcileOne config name ns healthMaps
+        -- CR deletion cleanup: remove health map entries for CRs no longer active
+        let activeCRs := clusters.map (·.1)
+        let maps ← healthMaps.get
+        healthMaps.set (maps.filter fun p => activeCRs.contains p.1)
       -- Step 3: Health check all Valkey pods
       let result ← Gungnir.listValkeyClusters config.watchNamespace
       match result with

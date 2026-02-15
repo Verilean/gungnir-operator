@@ -156,4 +156,73 @@ prefix:40 "□" => always
 -- <> P
 prefix:40 "◇" => eventually
 
+-- ===========================================================================
+-- Temporal Logic Lemmas for Liveness Proofs
+-- ===========================================================================
+
+/-- WF1 rule: if weak fairness holds for an action, and the action is always
+    enabled, then the action eventually happens.
+    WF(A) ∧ □(Enabled(A)) → ◇(A) -/
+theorem wf1_rule {T : Type} (ap : ActionPred T) :
+    ∀ ex, (weakFairness ap).satisfiedBy ex →
+          (always (liftState (enabled ap))).satisfiedBy ex →
+          (eventually (liftAction ap)).satisfiedBy ex := by
+  intro ex hWF hEnabled
+  -- weakFairness ap = (□(Enabled(ap))).leadsTo(A)
+  -- = □(□(Enabled(ap)) → ◇(A))
+  -- hEnabled gives □(Enabled(ap)) at suffix 0, which is the whole execution
+  -- So hWF at suffix 0 gives: □(Enabled(ap)) at suffix 0 → ◇(A) at suffix 0
+  have h0 := hWF 0
+  simp only [TempPred.satisfiedBy, TempPred.implies, Execution.suffix] at h0
+  apply h0
+  -- Need to show: (always (liftState (enabled ap))).satisfiedBy (ex.suffix 0)
+  intro i
+  exact hEnabled (i + 0)
+
+/-- Leads-to transitivity: if P ~> Q and Q ~> R, then P ~> R.
+    (P ~> Q) ∧ (Q ~> R) → (P ~> R) -/
+theorem leadsTo_trans {T : Type} (p q r : TempPred T) :
+    ∀ ex, (p.leadsTo q).satisfiedBy ex →
+          (q.leadsTo r).satisfiedBy ex →
+          (p.leadsTo r).satisfiedBy ex := by
+  intro ex hPQ hQR i hP
+  obtain ⟨j, hQ⟩ := hPQ i hP
+  -- hQ : q at (ex.suffix i).suffix j, i.e., q at state (n + j + i)
+  -- hQR at (i+j): need q at ex.suffix (i+j), i.e., q at state (n + (i+j))
+  -- These are equal since n + j + i = n + (i+j) won't hold definitionally,
+  -- so we work at the raw predicate level.
+  simp only [TempPred.leadsTo, always, TempPred.implies, TempPred.satisfiedBy,
+             eventually, Execution.suffix, liftAction, Execution.head, Execution.headNext] at *
+  have hQ' : q.pred ⟨fun n => ex.stateAt (n + i + j)⟩ := by
+    have eq : (⟨fun n => ex.stateAt (n + j + i)⟩ : Execution T) =
+              ⟨fun n => ex.stateAt (n + i + j)⟩ := by congr 1; funext n; congr 1; omega
+    rw [eq] at hQ; exact hQ
+  have hQ'' : q.pred ⟨fun n => ex.stateAt (n + (i + j))⟩ := by
+    have eq : (⟨fun n => ex.stateAt (n + i + j)⟩ : Execution T) =
+              ⟨fun n => ex.stateAt (n + (i + j))⟩ := by congr 1; funext n; congr 1; omega
+    rw [eq] at hQ'; exact hQ'
+  obtain ⟨k, hR⟩ := hQR (i + j) hQ''
+  exact ⟨j + k, by
+    have eq : (⟨fun n => ex.stateAt (n + k + (i + j))⟩ : Execution T) =
+              ⟨fun n => ex.stateAt (n + (j + k) + i)⟩ := by congr 1; funext n; congr 1; omega
+    rw [eq] at hR; exact hR⟩
+
+/-- Eventually monotonicity: if P → Q (pointwise), then ◇P → ◇Q. -/
+theorem eventually_mono {T : Type} (p q : TempPred T) :
+    (∀ ex, p.satisfiedBy ex → q.satisfiedBy ex) →
+    ∀ ex, (eventually p).satisfiedBy ex → (eventually q).satisfiedBy ex := by
+  intro hImpl ex ⟨i, hP⟩
+  exact ⟨i, hImpl _ hP⟩
+
+/-- Always strengthening: □P at a suffix implies □P at a later suffix. -/
+theorem always_suffix {T : Type} (p : TempPred T) :
+    ∀ ex (i : Nat), (always p).satisfiedBy ex → (always p).satisfiedBy (ex.suffix i) := by
+  intro ex i hAlways j
+  simp only [Execution.suffix, TempPred.satisfiedBy, always] at *
+  have h := hAlways (j + i)
+  have eq : (⟨fun i_1 => ex.stateAt (i_1 + (j + i))⟩ : Execution T) =
+            ⟨fun i_1 => ex.stateAt (i_1 + j + i)⟩ := by
+    congr 1; funext n; congr 1; omega
+  rw [eq] at h; exact h
+
 end Gungnir.TemporalLogic
