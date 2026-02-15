@@ -304,14 +304,50 @@ def encodeCommand (args : List String) : ByteArray :=
 
 /-! ## Round-Trip Property -/
 
-/-- Round-trip theorem: parsing the serialized form of any RESPValue
+/-- A string does not contain an embedded CRLF sequence.
+    Required for simple strings and errors in RESP3, which use CRLF as a delimiter.
+    Counterexample without this: `SimpleString "\r\n"` serializes to `+\r\n\r\n`
+    and the parser stops at the first CRLF, returning an empty string. -/
+def noEmbeddedCRLF (s : String) : Prop :=
+  ∀ (i : Nat), i + 1 < s.toUTF8.size →
+    ¬(s.toUTF8.get! i = crByte ∧ s.toUTF8.get! (i + 1) = lfByte)
+
+/-- A RESP3 value is valid for serialization round-trip.
+    Simple strings and errors must not contain CRLF (used as delimiter).
+    Bulk strings use length-prefix encoding and can safely contain any bytes.
+    Nested values (in arrays, maps, sets) must also be valid recursively.
+
+    Defined as an inductive predicate to avoid termination proof obligations
+    with nested `List RESPValue` fields. -/
+inductive ValidRESP : RESPValue → Prop where
+  | simpleStr {s : String} : noEmbeddedCRLF s → ValidRESP (.SimpleString s)
+  | err {s : String} : noEmbeddedCRLF s → ValidRESP (.Error s)
+  | int {n : Int} : ValidRESP (.Integer n)
+  | bulk {s : String} : ValidRESP (.BulkString s)
+  | arr {elems : List RESPValue} :
+      (∀ v, v ∈ elems → ValidRESP v) → ValidRESP (.Array elems)
+  | null : ValidRESP .Null
+  | bool {b : Bool} : ValidRESP (.Boolean b)
+  | mapVal {entries : List (RESPValue × RESPValue)} :
+      (∀ p, p ∈ entries → ValidRESP p.1) →
+      (∀ p, p ∈ entries → ValidRESP p.2) →
+      ValidRESP (.Map entries)
+  | setVal {elems : List RESPValue} :
+      (∀ v, v ∈ elems → ValidRESP v) → ValidRESP (.Set elems)
+
+/-- Round-trip theorem: parsing the serialized form of a **valid** RESPValue
     produces the original value.
 
-    forall v, parse_resp3 (unparse_resp3 v) 0 = some (v, (unparse_resp3 v).size)
+    The validity precondition (`validRESPValue v`) excludes values that contain
+    embedded CRLF in simple strings/errors, which would cause the parser to
+    split at the wrong position. This was discovered via counterexample:
+    `SimpleString "\r\n"` → serializes to `+\r\n\r\n` → parser returns `SimpleString ""`.
 
-    This theorem ensures our parser and serializer are mutually consistent. -/
+    Note: Proof is blocked by `partial def` on `parse_resp3` and `unparse_resp3`.
+    A fuel-based total version would enable structural induction. -/
 theorem parse_unparse_roundtrip :
     ∀ (v : RESPValue),
+      ValidRESP v →
       parse_resp3 (unparse_resp3 v) 0 = some (v, (unparse_resp3 v).size) := by
   sorry
 

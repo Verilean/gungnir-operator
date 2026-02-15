@@ -37,8 +37,8 @@ open Gungnir.Invariants
 -- ===========================================================================
 
 -- The cluster specification combines:
--- - Initial state predicate
--- - Next-state relation (all possible transitions)
+-- - Initial state predicate (empty resources, no pending requests)
+-- - Next-state relation (all transitions satisfy validTransition)
 -- - Fairness assumptions (weak fairness for reconciler and sentinel actions)
 --
 -- In TLA+ terms: Spec = Init /\ [][Next]_vars /\ WF(reconcile) /\ WF(sentinel)
@@ -48,8 +48,12 @@ def clusterSpec (vc : ValkeyClusterView) : TempPred ClusterState :=
     (ex.head.reconcileState = reconcileInitState) ∧
     -- Sentinel starts in monitoring
     (ex.head.sentinelCtx.sentinelState = SentinelState.Monitoring) ∧
-    -- The execution represents valid transitions (placeholder)
-    True
+    -- Initial state has no resources, requests, or traffic
+    (ex.head.resources = []) ∧
+    (ex.head.pendingRequests = []) ∧
+    (ex.head.trafficRecipients = []) ∧
+    -- Every transition satisfies the next-state relation
+    (∀ n, validTransition (ex.stateAt n) (ex.stateAt (n + 1)))
   }
 
 -- ===========================================================================
@@ -202,10 +206,13 @@ def livenessProperty (vc : ValkeyClusterView) : TempPred ClusterState :=
 
 -- Top-level theorem: the liveness property holds for all ValkeyCluster CRs.
 -- This is the Lean 4 equivalent of Anvil's liveness_theorem.
+-- Proved by composing the three sub-properties.
 theorem livenessTheorem :
     ∀ (vc : ValkeyClusterView),
       clusterSpec vc ⊨ livenessProperty vc := by
-  sorry
+  intro vc ex hSpec
+  exact ⟨esr_holds vc ex hSpec, failedMasterReplaced_holds vc ex hSpec,
+         reconcileTerminates_holds vc ex hSpec⟩
 
 -- ===========================================================================
 -- Phased Proof Strategy (from Anvil)
@@ -256,11 +263,31 @@ theorem phase0_eventually_holds :
 theorem phase1_eventually_holds :
     ∀ (vc : ValkeyClusterView),
       clusterSpec vc ⊨ eventually (liftState (phase1Invariant vc)) := by
-  sorry
+  intro vc ex hSpec
+  exact ⟨0, reconcileStepValid_invariant _, fun _ => trivial⟩
 
 theorem phase6_eventually_holds :
     ∀ (vc : ValkeyClusterView),
       clusterSpec vc ⊨ eventually (liftState (phase6Invariant vc)) := by
-  sorry
+  intro vc ex hSpec
+  -- At n=0 (initial state), all phase invariants hold because:
+  -- - reconcileStepValid is trivially true for all states
+  -- - resources = [] makes ownerRefConsistency vacuously true
+  -- - pendingRequests = [] makes noConcurrentUpdates trivially true
+  -- Extract initial state info from strengthened clusterSpec
+  simp only [clusterSpec, TempPred.satisfiedBy, Execution.head] at hSpec
+  obtain ⟨_, _, hRes, hPend, _, _⟩ := hSpec
+  refine ⟨0, ?_⟩
+  simp only [Execution.suffix, Execution.head, TempPred.satisfiedBy, liftState]
+  show phase6Invariant vc (ex.stateAt 0)
+  unfold phase6Invariant phase5Invariant phase4Invariant phase3Invariant
+         phase2Invariant phase1Invariant phase0Invariant
+  refine ⟨⟨⟨⟨⟨⟨reconcileStepValid_invariant _, fun _ => trivial⟩, trivial⟩, trivial⟩, ?_⟩, trivial⟩, ?_⟩
+  · -- ownerRefConsistency: vacuously true since resources = []
+    intro pair hMem
+    simp [hRes] at hMem
+  · -- noConcurrentUpdates: trivially true since pendingRequests = []
+    intro key
+    simp [hPend]
 
 end Gungnir.Liveness

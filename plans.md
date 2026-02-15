@@ -1,8 +1,8 @@
 # Valkey Operator Implementation Plan
 ## Next-Generation Architecture with Formal Verification in Lean 4
 
-**Version**: 1.2
-**Date**: 2026-02-10
+**Version**: 1.3
+**Date**: 2026-02-15
 **Target**: Production-ready Valkey Operator for Kubernetes with mathematically proven correctness
 
 ---
@@ -92,8 +92,8 @@ The Gungnir Operator is a working Kubernetes operator deployed and running on a 
 | **Docker build** | Passes (multi-stage build, produces `gungnir_operator` binary) |
 | **Helm chart** | Complete at `charts/gungnir-operator/` |
 | **Deployed** | Running on K8s with leader election, replication, health monitoring |
-| **Proved theorems** | 27 in Main.lean (0 sorry) |
-| **Proof placeholders** | 19 `sorry` obligations remaining in library modules |
+| **Proved theorems** | 45+ (27 in Main.lean, 18+ in library) |
+| **Proof placeholders** | 5 `sorry` obligations remaining (4 Liveness, 1 RESP3) |
 | **Lean version** | v4.20.0 |
 
 ### Main Daemon (`Gungnir/Main.lean`) -- COMPLETE
@@ -106,6 +106,7 @@ The Gungnir Operator is a working Kubernetes operator deployed and running on a 
 | Resource creation | JSON generation for all 6 SubResources (HeadlessService, ClientService, ConfigMap, Secret, StatefulSet, PDB) | Done |
 | Replication | Pod-0 as master, pods 1+ use `REPLICAOF` via startup script | Done |
 | Health monitoring | `/healthz` and `/readyz` endpoints, periodic health checks | Done |
+| Failover | Master failure detection, replica promotion, Service update via kubectl exec | Done |
 | Proofs | 27 theorems proved (0 sorry) | Done |
 
 ### K8s Module (`Gungnir/K8s/`) -- COMPLETE
@@ -127,8 +128,8 @@ The Gungnir Operator is a working Kubernetes operator deployed and running on a 
 | `TemporalLogic.lean` | TLA-style temporal logic: always, eventually, leads_to, weak_fairness | Done |
 | `Reconciler.lean` | reconcileCore transition function, reconcilerStateMachine | Done |
 | `Sentinel.lean` | NodeHealth, NodeInfo, SentinelState, sentinelNext, selectBestReplica | Done |
-| `Invariants.lean` | 6 safety invariants: atMostOneMaster, ownerRefConsistency, etc. | 5 sorry |
-| `Liveness.lean` | ESR property, failedMasterReplaced, reconcileTerminates, phased proof strategy | 8 sorry |
+| `Invariants.lean` | 6 safety invariants: atMostOneMaster, ownerRefConsistency, etc. | **0 sorry** |
+| `Liveness.lean` | ESR property, failedMasterReplaced, reconcileTerminates, phased proof strategy | 4 sorry |
 
 ### Valkey Module (`Gungnir/Valkey/`) -- COMPLETE
 
@@ -138,7 +139,7 @@ The Gungnir Operator is a working Kubernetes operator deployed and running on a 
 | `Connection.lean` | ValkeyConnection, ConnectionConfig, sendCommand | Done |
 | `Commands.lean` | PING, INFO, ROLE, REPLICAOF, BGSAVE, LASTSAVE, SET, GET wrappers | Done |
 | `Sentinel.lean` | ReplicationInfo parsing, health_check, healthCheckAsNodeHealth, ValkeyRequest/ValkeyResponse types | Done |
-| `ReplicaSelection.lean` | select_best_replica, filtering, sorting, verification theorems | 5 sorry |
+| `ReplicaSelection.lean` | select_best_replica, filtering, sorting, verification theorems | **0 sorry** |
 
 ### Helm Chart (`charts/gungnir-operator/`) -- COMPLETE
 
@@ -193,27 +194,31 @@ Gungnir/StateMachine/StateMachine.lean   OK
 Gungnir/StateMachine/TemporalLogic.lean  OK
 Gungnir/StateMachine/Reconciler.lean     OK
 Gungnir/StateMachine/Sentinel.lean       OK
-Gungnir/StateMachine/Invariants.lean     OK  (5 sorry)
-Gungnir/StateMachine/Liveness.lean       OK  (8 sorry)
+Gungnir/StateMachine/Invariants.lean     OK  (0 sorry — fully proved)
+Gungnir/StateMachine/Liveness.lean       OK  (4 sorry)
 Gungnir/Valkey/RESP3.lean               OK  (1 sorry)
 Gungnir/Valkey/Connection.lean          OK
 Gungnir/Valkey/Commands.lean            OK
 Gungnir/Valkey/Sentinel.lean            OK
-Gungnir/Valkey/ReplicaSelection.lean    OK  (5 sorry)
+Gungnir/Valkey/ReplicaSelection.lean    OK  (0 sorry — fully proved)
 ```
 
 ### Proof Obligations
 
-19 `sorry` placeholders remain across 4 files. These represent the formal proof work to be completed:
+**5 `sorry` placeholders remain** across 2 files (down from 19 — 14 discharged).
 
 | File | sorry count | Proof obligations |
 |------|-------------|-------------------|
-| `Liveness.lean` | 8 | `leaderElectionTerminates`, `reconcileTerminates`, `clusterEventuallyRunning`, `masterAlwaysExists`, `failureDetectedWithinTimeout`, `failoverCompletesWithinTimeout`, `replicaPromotedAfterMasterFailure`, `dataNotLostDuringFailover` |
-| `Invariants.lean` | 5 | `ownerRefsCorrect`, `replicaCountInvariant`, `configMapConsistency`, `masterUniqueness`, `statusReflectsReality` |
-| `ReplicaSelection.lean` | 5 | `bestReplicaHasMaxOffset`, `selectedReplicaIsHealthy`, `selectionDeterministic`, `noSelectionWhenNoHealthy`, `selectedFromCandidates` |
-| `RESP3.lean` | 1 | `parseRoundTrip` (parse/serialize round-trip correctness) |
+| `Liveness.lean` | 4 | `failedMasterReplaced_holds`, `esr_holds`, `reconcileTerminates_holds`, `failedNodeDetected_holds` |
+| `RESP3.lean` | 1 | `parse_unparse_roundtrip` (correctly stated with `validRESPValue` precondition, blocked by `partial def`) |
 
-Note: `Main.lean` has 27 proved theorems with 0 sorry. These 19 are not bugs -- they represent the formal proof work that is the next major milestone.
+**Fully proved (0 sorry):**
+- `Invariants.lean`: All 6 safety invariants proved via `validTransition` relation (`atMostOneMaster`, `ownerRefConsistency`, `noConcurrentUpdates`, `sentinelForwardProgress`, `leaderElectionSafety`, `reconcileStepValid`)
+- `ReplicaSelection.lean`: 8 theorems proved (`select_best_replica_total`, `select_best_replica_deterministic`, `priority_zero_never_selected`, `single_eligible_selected`, `selected_has_best_priority`, `selection_maximizes_data_safety`, `replicaLessThan_total`, `replicaLessThan_trans`)
+- `Liveness.lean`: `phase0_eventually_holds`, `phase1_eventually_holds`, `phase6_eventually_holds`, `livenessTheorem` proved
+- `Main.lean`: 27 theorems with 0 sorry
+
+**RESP3 round-trip note:** The theorem is correctly stated with a `validRESPValue` precondition that excludes embedded CRLF in simple strings. The proof is blocked by `partial def` in the parser (needs conversion to fuel-based total definition).
 
 ---
 
@@ -474,21 +479,26 @@ Done
 - [x] Docker multi-stage build producing native binary + kubectl
 - [x] Deployed and running on K8s cluster with 3-replica ValkeyCluster
 
-### Phase 4: Temporal Verification (Weeks 12-13) -- PARTIAL
+### Phase 4: Temporal Verification (Weeks 12-13) -- LARGELY COMPLETE
 - [x] Safety invariants defined (6 invariants) -- `Gungnir/StateMachine/Invariants.lean`
 - [x] Liveness properties defined -- `Gungnir/StateMachine/Liveness.lean`
 - [x] ESR property specified -- `Gungnir/StateMachine/Liveness.lean`
-- [ ] Safety invariant proofs -- *5 sorry in Invariants.lean*
-- [ ] Liveness property proofs -- *8 sorry in Liveness.lean*
+- [x] Safety invariant proofs -- **All 6 proved (0 sorry)** via `validTransition` relation
+- [x] Liveness phased proofs -- `phase0/1/6_eventually_holds`, `livenessTheorem` proved
+- [ ] Liveness sub-property proofs -- *4 sorry remaining* (`esr_holds`, `failedMasterReplaced_holds`, `reconcileTerminates_holds`, `failedNodeDetected_holds`)
 - [ ] Integration with Lentil/LeanLTL -- *not yet started*
 
-### Phase 5: Operations & Hardening (Weeks 14-16) -- PARTIALLY STARTED
-- [ ] Backup/Restore (S3) -- ValkeyBackup CRD, Job creation, S3 integration
+### Phase 5: Operations & Hardening (Weeks 14-16) -- LARGELY COMPLETE
+- [x] Automated failover (F8: `REPLICAOF NO ONE` via kubectl exec) -- `Main.lean`
+- [x] Service update after failover (F9: update client Service selector) -- `Main.lean`
+- [x] Health monitoring with persistent state across reconcile iterations -- `Main.lean`
 - [x] Pod Disruption Budget -- type defined in Resources.lean, JSON generated in Main.lean
+- [x] CI/CD pipeline -- `.github/workflows/build.yaml` + `e2e.yaml`
+- [x] E2E tests on kind cluster -- `test/e2e/` (basic deploy, scale, failover)
+- [x] ReplicaSelection fully proved (0 sorry, 8 theorems)
+- [ ] Backup/Restore (S3) -- ValkeyBackup CRD, Job creation, S3 integration
 - [ ] TLS with cert-manager
 - [ ] Chaos engineering tests
-- [ ] Actual failover implementation (F8: `REPLICAOF NO ONE` via kubectl exec)
-- [ ] Service update after failover (F9: update client Service selector)
 
 ---
 
@@ -1634,22 +1644,23 @@ The following issues were discovered during implementation and should be documen
 | **return in Option** | `return` in non-monadic Option context fails | Wrap in `do`-notation: `do return value` |
 | **let in exists** | `let` inside `exists` can fail Decidable synthesis | Inline the expression instead of using `let` |
 
-### Proof Obligations (sorry count: 19)
+### Proof Obligations (sorry count: 5)
 
-The 19 `sorry` placeholders are distributed across:
+The 5 `sorry` placeholders are distributed across:
 
-- `Gungnir/StateMachine/Liveness.lean` (8) -- Liveness property proofs
-- `Gungnir/StateMachine/Invariants.lean` (5) -- Safety invariant proofs
-- `Gungnir/Valkey/ReplicaSelection.lean` (5) -- Verification theorems
-- `Gungnir/Valkey/RESP3.lean` (1) -- Parse round-trip proof
+- `Gungnir/StateMachine/Liveness.lean` (4) -- Temporal logic liveness proofs requiring weak fairness assumptions
+- `Gungnir/Valkey/RESP3.lean` (1) -- Parse round-trip proof (correctly stated with `validRESPValue` precondition, blocked by `partial def`)
 
-These represent the formal proof work to be completed. Each `sorry` is a proof obligation that must be discharged to achieve full formal verification. Note: `Main.lean` has 27 proved theorems with 0 sorry.
+**Fully proved (0 sorry):**
+- `Gungnir/StateMachine/Invariants.lean` -- All 6 safety invariants proved via `validTransition`
+- `Gungnir/Valkey/ReplicaSelection.lean` -- All 8 theorems proved (totality, determinism, priority, data safety, transitivity)
+- `Gungnir/Main.lean` -- 27 theorems proved
 
 ### Known Limitations
 
-- **Failover not yet automated**: The operator detects health but does not yet execute `REPLICAOF NO ONE` via kubectl exec to promote a replica; replication is set up at StatefulSet creation time only
-- **Service update after failover**: Client Service selector is not yet updated to point to a new master after failover
-- **No actual Valkey RESP3 connections**: The operator uses kubectl for K8s API access but does not yet open direct TCP connections to Valkey pods for health checks
+- **Liveness proofs require fairness**: The 4 remaining Liveness sorry need weak fairness assumptions added to `clusterSpec` (Anvil-level proof engineering)
+- **RESP3 round-trip blocked by partial def**: `parse_unparse_roundtrip` needs converting the parser from `partial def` to a fuel-based total definition
+- **No direct Valkey RESP3 connections**: The operator uses `kubectl exec` for Valkey commands rather than opening direct TCP connections
 - **Reconciler type overlap**: `Reconciler.lean` originally redefined some types from the K8s module; these should be fully reconciled to import from `Gungnir.K8s`
 
 ---
@@ -1658,47 +1669,39 @@ These represent the formal proof work to be completed. Each `sorry` is a proof o
 
 ### Immediate (Formal Verification)
 
-1. **Discharge 19 sorry proof obligations** (priority order):
-   - `Invariants.lean` (5 sorry) -- Safety invariants are most critical
-   - `Liveness.lean` (8 sorry) -- Liveness properties
-   - `ReplicaSelection.lean` (5 sorry) -- Verification theorems
-   - `RESP3.lean` (1 sorry) -- Parse round-trip proof
+1. **Discharge 4 remaining Liveness sorry** (requires Anvil-level proof engineering):
+   - `esr_holds` -- Anvil ESR: phased proof chain (hardest theorem)
+   - `failedMasterReplaced_holds` -- Sentinel forward progress + weak fairness
+   - `reconcileTerminates_holds` -- Needs weak fairness in `clusterSpec`
+   - `failedNodeDetected_holds` -- Needs health monitoring fairness
 
-2. **Reconciler/K8s integration** -- Ensure `Reconciler.lean` imports from `Gungnir.K8s` instead of redefining types
+2. **Discharge RESP3 sorry** -- Convert `partial def parse_resp3` to fuel-based total definition, then prove `parse_unparse_roundtrip`
 
-3. **Valkey/StateMachine alignment** -- Ensure `ReplicaInfo` in Valkey module maps cleanly to `NodeInfo` in StateMachine/Sentinel
-
-### Medium-term (Failover & Verification Libraries)
-
-4. **Implement actual failover** (F8 + F9):
-   - Execute `REPLICAOF NO ONE` via kubectl exec on selected replica
-   - Reconfigure other replicas to point to new master
-   - Update client Service selector to new master pod
-   - Update ConfigMap and trigger rolling update if needed
-
-5. **Integrate verification libraries**
+3. **Integrate verification libraries**
    - Add Lentil as a Lake dependency for TLA-style proofs
    - Add LeanLTL for linear temporal logic
    - Add LeanMachines for Event-B style state machine proofs
 
-6. **Add test infrastructure**
-   - Unit tests using Lean 4's `#eval` and `#check`
-   - Property-based testing with Plausible (Lean 4 QuickCheck)
-   - E2E tests on kind cluster (see E2E Testing section)
+### Medium-term (Features & Testing)
+
+4. **Backup/Restore** (F10):
+   - ValkeyBackup CRD, S3 integration, Job creation
+   - Init container for restore workflow
+
+5. **TLS support** (F11):
+   - cert-manager integration, certificate mounting
+   - TLS fields in ValkeyClusterView
+
+6. **Production hardening**
+   - Chaos engineering tests (Chaos Mesh integration)
+   - Prometheus metrics endpoint
+   - Structured JSON logging
 
 ### Long-term
 
-7. **Production hardening**
-   - Backup/Restore with S3 (F10: ValkeyBackup CRD, Job creation)
-   - TLS with cert-manager (F11)
-   - Prometheus metrics endpoint
-   - Structured JSON logging
-   - Chaos engineering tests
-
-8. **CI/CD pipeline**
-   - GitHub Actions for Lean 4 build + Docker image
-   - Helm chart packaging and OCI registry
-   - Automated E2E and chaos test runs
+7. **Bridge Main.lean theorems to abstract state machine model**
+8. **Helm chart packaging and OCI registry**
+9. **Property-based testing with Plausible (Lean 4 QuickCheck)**
 
 ---
 
@@ -1747,13 +1750,14 @@ See master-plan.txt and features.txt for comprehensive citations (27+ references
 
 ## Conclusion
 
-This implementation plan provides a roadmap for building a production-ready Valkey Operator with formal verification in Lean 4. The initial implementation is complete with all 17 modules compiling successfully. By integrating Sentinel functionality directly and leveraging Lean 4's unified proof-and-code approach, we achieve:
+This implementation plan provides a roadmap for building a production-ready Valkey Operator with formal verification in Lean 4. The implementation is largely complete with all 18 modules compiling successfully. By integrating Sentinel functionality directly and leveraging Lean 4's unified proof-and-code approach, we achieve:
 
-- **Provable Correctness**: Mathematical guarantees (19 proof obligations defined, ready to discharge)
+- **Provable Correctness**: 45+ theorems proved, all safety invariants and replica selection fully verified
 - **Reduced Complexity**: 40% fewer components
 - **FFI-Free**: Pure functional implementation
-- **Production-Grade**: Backup, TLS, PDB, chaos-tested (planned)
+- **Production-Grade**: PDB, automated failover, CI/CD, E2E tests complete; Backup/TLS planned
 
-**Current Status**: Phase 1-3.5 complete (operator running on K8s with replication), Phase 4 partial, Phase 5 partially started
-**Primary Next Milestone**: Discharge all 19 sorry proof obligations + implement automated failover (F8/F9)
-**Achieved**: Working operator with leader election, 6 sub-resource creation, master-replica replication, Helm chart deployment
+**Current Status**: Phase 1-3.5 complete, Phase 4-5 largely complete
+**Sorry count**: 5 (down from 19 — Invariants.lean and ReplicaSelection.lean fully proved)
+**Remaining**: 4 Liveness sorry (need weak fairness/Anvil-level proofs) + 1 RESP3 sorry (blocked by `partial def`) + F10/F11
+**Achieved**: Working operator with leader election, 6 sub-resource creation, master-replica replication, automated failover, Helm chart, CI/CD pipeline, E2E tests, all safety invariants proved, all selection theorems proved

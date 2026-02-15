@@ -62,19 +62,22 @@ def filterEligible (config : SelectionConfig) (replicas : List ReplicaInfo)
 /-! ## Comparison and Sorting -/
 
 /-- Compare two replicas for selection ordering.
-    Returns true if `a` should be preferred over `b`.
+    Returns true if `a` should be preferred over (or equal to) `b`.
 
     Priority order:
     1. Lower priority value (higher precedence)
     2. Higher replication offset (more data)
-    3. Lexicographically smaller run ID (deterministic tiebreaker) -/
+    3. Lexicographically smaller or equal run ID (deterministic tiebreaker)
+
+    Uses `≤` (via `!(b.runId < a.runId)`) for the run ID comparison to make
+    the comparator total, which is required by `List.sorted_mergeSort`. -/
 def replicaLessThan (a b : ReplicaInfo) : Bool :=
   if a.priority != b.priority then
     a.priority < b.priority
   else if a.replOffset != b.replOffset then
     a.replOffset > b.replOffset
   else
-    a.runId < b.runId
+    !(b.runId < a.runId)
 
 /-- Sort replicas by selection preference (best candidate first). -/
 def sortReplicas (replicas : List ReplicaInfo) : List ReplicaInfo :=
@@ -162,18 +165,162 @@ theorem select_best_replica_deterministic :
   intros
   rfl
 
+/-- replicaLessThan is total: for any two replicas, at least one direction holds.
+    This is required by List.sorted_mergeSort to prove the sorted property.
+
+    Proof sketch: Case split on priority comparison (Nat trichotomy),
+    then offset comparison, then runId comparison. The last comparison uses
+    `!(b.runId < a.runId)` which gives totality via String ordering linearity. -/
+private theorem replicaLessThan_total (a b : ReplicaInfo) :
+    replicaLessThan a b = true ∨ replicaLessThan b a = true := by
+  simp only [replicaLessThan]
+  by_cases hp : a.priority = b.priority
+  · -- priorities equal
+    have hpf : (a.priority != b.priority) = false := by simpa [bne_iff_ne] using hp
+    have hpf' : (b.priority != a.priority) = false := by simpa [bne_iff_ne] using hp.symm
+    simp only [hpf, hpf', Bool.false_eq_true, ↓reduceIte]
+    by_cases ho : a.replOffset = b.replOffset
+    · -- offsets also equal: runId tiebreaker
+      have hof : (a.replOffset != b.replOffset) = false := by simpa [bne_iff_ne] using ho
+      have hof' : (b.replOffset != a.replOffset) = false := by simpa [bne_iff_ne] using ho.symm
+      simp only [hof, hof', Bool.false_eq_true, ↓reduceIte]
+      -- Goal: !(b.runId < a.runId) = true ∨ !(a.runId < b.runId) = true
+      by_cases hr : b.runId < a.runId
+      · right; simp only [Bool.not_eq_true', decide_eq_false_iff_not]; exact String.lt_asymm hr
+      · left; simp only [Bool.not_eq_true', decide_eq_false_iff_not]; exact hr
+    · -- offsets differ
+      by_cases hgt : a.replOffset > b.replOffset
+      · left
+        have hot : (a.replOffset != b.replOffset) = true := by simpa [bne_iff_ne] using ho
+        simp only [hot, ↓reduceIte, decide_eq_true_eq]; omega
+      · right
+        have hot' : (b.replOffset != a.replOffset) = true := by
+          simpa [bne_iff_ne] using (Ne.symm ho)
+        simp only [hot', ↓reduceIte, decide_eq_true_eq]; omega
+  · -- priorities differ
+    by_cases hlt : a.priority < b.priority
+    · left
+      have hpt : (a.priority != b.priority) = true := by simpa [bne_iff_ne] using hp
+      simp only [hpt, ↓reduceIte, decide_eq_true_eq]; exact hlt
+    · right
+      have hpt' : (b.priority != a.priority) = true := by
+        simpa [bne_iff_ne] using (Ne.symm hp)
+      simp only [hpt', ↓reduceIte, decide_eq_true_eq]; omega
+
+/-- If replicaLessThan a b = true, then a.priority ≤ b.priority.
+    This follows from the definition: replicaLessThan first compares priority,
+    and only considers offset/runId when priorities are equal.
+
+    Proof sketch: Unfold replicaLessThan, case split on the `if` branches.
+    In the priority-differs branch, a.priority < b.priority implies ≤.
+    In the priority-equal branches, equality implies ≤. -/
+private theorem replicaLessThan_implies_priority_le (a b : ReplicaInfo) :
+    replicaLessThan a b = true → a.priority ≤ b.priority := by
+  intro h
+  unfold replicaLessThan at h
+  by_cases hp : a.priority = b.priority
+  · omega
+  · have hne : (a.priority != b.priority) = true := by simp [bne_iff_ne, hp]
+    simp only [hne, ↓reduceIte, decide_eq_true_eq] at h
+    omega
+
+/-- If replicaLessThan a b = true and a.priority = b.priority,
+    then a.replOffset ≥ b.replOffset.
+    Within the same priority tier, higher offset is preferred.
+
+    Proof sketch: When priorities are equal, the first `if` is false.
+    The second `if` compares offsets: if different, a.replOffset > b.replOffset.
+    If equal, replOffset equality gives ≥. -/
+private theorem replicaLessThan_same_priority_implies_offset (a b : ReplicaInfo) :
+    replicaLessThan a b = true → a.priority = b.priority →
+    a.replOffset ≥ b.replOffset := by
+  intro h hpri
+  unfold replicaLessThan at h
+  have hne : ¬((a.priority != b.priority) = true) := by simp [bne_iff_ne, hpri]
+  simp only [show (a.priority != b.priority) = false from by simpa [bne_iff_ne] using hpri,
+             Bool.false_eq_true, ↓reduceIte] at h
+  by_cases ho : a.replOffset = b.replOffset
+  · omega
+  · have hone : (a.replOffset != b.replOffset) = true := by simp [bne_iff_ne, ho]
+    simp only [hone, ↓reduceIte, decide_eq_true_eq] at h
+    omega
+
+/-- replicaLessThan is transitive, required by List.sorted_mergeSort. -/
+private theorem replicaLessThan_trans (a b c : ReplicaInfo) :
+    replicaLessThan a b = true → replicaLessThan b c = true →
+    replicaLessThan a c = true := by
+  intro hab hbc
+  have hab_pri := replicaLessThan_implies_priority_le a b hab
+  have hbc_pri := replicaLessThan_implies_priority_le b c hbc
+  unfold replicaLessThan
+  by_cases hac_pri : a.priority = c.priority
+  · -- a.priority = c.priority, so a.priority = b.priority = c.priority
+    have hpab : a.priority = b.priority := by omega
+    have hpbc : b.priority = c.priority := by omega
+    have hpf : (a.priority != c.priority) = false := by simpa [bne_iff_ne] using hac_pri
+    simp only [hpf, Bool.false_eq_true, ↓reduceIte]
+    have hab_off := replicaLessThan_same_priority_implies_offset a b hab hpab
+    have hbc_off := replicaLessThan_same_priority_implies_offset b c hbc hpbc
+    by_cases hac_off : a.replOffset = c.replOffset
+    · have hoff_eq_ab : a.replOffset = b.replOffset := by omega
+      have hoff_eq_bc : b.replOffset = c.replOffset := by omega
+      have hof : (a.replOffset != c.replOffset) = false := by simpa [bne_iff_ne] using hac_off
+      simp only [hof, Bool.false_eq_true, ↓reduceIte]
+      -- runId tiebreaker: a.runId ≤ b.runId ≤ c.runId (via !)
+      -- Need: !(c.runId < a.runId) = true
+      -- From hab: priorities and offsets equal, so hab reduces to !(b.runId < a.runId)
+      unfold replicaLessThan at hab hbc
+      simp only [show (a.priority != b.priority) = false from by simpa [bne_iff_ne] using hpab,
+                 show (a.replOffset != b.replOffset) = false from by simpa [bne_iff_ne] using hoff_eq_ab,
+                 show (b.priority != c.priority) = false from by simpa [bne_iff_ne] using hpbc,
+                 show (b.replOffset != c.replOffset) = false from by simpa [bne_iff_ne] using hoff_eq_bc,
+                 Bool.false_eq_true, ↓reduceIte, Bool.not_eq_true', decide_eq_false_iff_not] at hab hbc
+      -- hab : ¬(b.runId < a.runId), hbc : ¬(c.runId < b.runId)
+      -- String.le x y = ¬(y < x), so hab means a.runId ≤ b.runId, hbc means b.runId ≤ c.runId
+      -- By String.le_trans: a.runId ≤ c.runId, i.e., ¬(c.runId < a.runId)
+      simp only [Bool.not_eq_true', decide_eq_false_iff_not]
+      exact String.le_trans hab hbc
+    · have hot : (a.replOffset != c.replOffset) = true := by simpa [bne_iff_ne] using hac_off
+      simp only [hot, ↓reduceIte, decide_eq_true_eq]; omega
+  · have hpt : (a.priority != c.priority) = true := by simpa [bne_iff_ne] using hac_pri
+    simp only [hpt, ↓reduceIte, decide_eq_true_eq]; omega
+
+/-- Totality in the form required by List.sorted_mergeSort. -/
+private theorem replicaLessThan_total_bool (a b : ReplicaInfo) :
+    (replicaLessThan a b || replicaLessThan b a) = true := by
+  simp only [Bool.or_eq_true]
+  exact replicaLessThan_total a b
+
 /-- The selected replica has the highest priority (lowest priority number)
-    among all eligible replicas.
-    Proof strategy: mergeSort with replicaLessThan places the lowest priority first.
-    The head of the sorted list has priority ≤ all other elements.
-    Requires: replicaLessThan is transitive and total (for sorted_mergeSort). -/
+    among all eligible replicas. -/
 theorem selected_has_best_priority :
     ∀ (replicas : List ReplicaInfo) (config : SelectionConfig) (selected : ReplicaInfo),
       select_best_replica replicas config = some selected →
       ∀ (other : ReplicaInfo),
         other ∈ filterEligible config replicas →
         selected.priority ≤ other.priority := by
-  sorry
+  intro replicas config selected hSel other hOther
+  simp only [select_best_replica, sortReplicas] at hSel
+  cases hSorted : (filterEligible config replicas).mergeSort replicaLessThan with
+  | nil => rw [hSorted] at hSel; simp at hSel
+  | cons best rest =>
+    rw [hSorted] at hSel; simp at hSel
+    -- hSel : best = selected
+    -- other is in the sorted list (by permutation)
+    have hPerm := List.mergeSort_perm (filterEligible config replicas) replicaLessThan
+    rw [hSorted] at hPerm
+    have hOtherSorted : other ∈ (best :: rest) := hPerm.symm.subset hOther
+    cases List.mem_cons.mp hOtherSorted with
+    | inl hEq =>
+      -- other = best = selected, so selected.priority ≤ other.priority is trivial
+      rw [← hSel, hEq]; exact Nat.le_refl _
+    | inr hInRest =>
+      have hPW := List.sorted_mergeSort replicaLessThan_trans replicaLessThan_total_bool
+                    (filterEligible config replicas)
+      rw [hSorted] at hPW
+      rw [← hSel]
+      exact replicaLessThan_implies_priority_le best other
+        (List.rel_of_pairwise_cons hPW hInRest)
 
 /-- Key safety theorem: The selected replica maximizes data safety.
     Specifically, the selected replica either:
@@ -191,7 +338,34 @@ theorem selection_maximizes_data_safety :
         other ∈ filterEligible config replicas →
         selected.replOffset ≥ other.replOffset ∨
         selected.priority < other.priority := by
-  sorry
+  intro replicas config selected hSel other hOther
+  simp only [select_best_replica, sortReplicas] at hSel
+  cases hSorted : (filterEligible config replicas).mergeSort replicaLessThan with
+  | nil => rw [hSorted] at hSel; simp at hSel
+  | cons best rest =>
+    rw [hSorted] at hSel; simp at hSel
+    -- hSel : best = selected
+    have hPerm := List.mergeSort_perm (filterEligible config replicas) replicaLessThan
+    rw [hSorted] at hPerm
+    have hOtherSorted : other ∈ (best :: rest) := hPerm.symm.subset hOther
+    cases List.mem_cons.mp hOtherSorted with
+    | inl hEq =>
+      -- other = best = selected
+      left; rw [← hSel, hEq]; exact Nat.le_refl _
+    | inr hInRest =>
+      have hPW := List.sorted_mergeSort replicaLessThan_trans replicaLessThan_total_bool
+                    (filterEligible config replicas)
+      rw [hSorted] at hPW
+      have hLt := List.rel_of_pairwise_cons hPW hInRest
+      -- hLt : replicaLessThan best other = true
+      rw [← hSel]
+      by_cases hpri : best.priority = other.priority
+      · -- same priority: offset must be ≥
+        left; exact replicaLessThan_same_priority_implies_offset best other hLt hpri
+      · -- different priority: best has strictly lower priority
+        right
+        have hle := replicaLessThan_implies_priority_le best other hLt
+        omega
 
 /-- If a replica with priority 0 exists, it is never selected. -/
 theorem priority_zero_never_selected :
